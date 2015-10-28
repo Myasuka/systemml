@@ -38,6 +38,7 @@ import com.ibm.bi.dml.lops.MapMult;
 import com.ibm.bi.dml.lops.MapMultChain;
 import com.ibm.bi.dml.lops.MapMultChain.ChainType;
 import com.ibm.bi.dml.lops.PMMJ;
+import com.ibm.bi.dml.lops.PMapMult;
 import com.ibm.bi.dml.lops.PartialAggregate.CorrectionLocationType;
 import com.ibm.bi.dml.lops.Transform;
 import com.ibm.bi.dml.lops.Transform.OperationTypes;
@@ -71,6 +72,7 @@ public class AggBinaryOp extends Hop implements MultiThreadedHop
 		MAPMM_L,  //map-side matrix-matrix multiplication using distributed cache (mr/sp)
 		MAPMM_R,  //map-side matrix-matrix multiplication using distributed cache (mr/sp)
 		MAPMM_CHAIN, //map-side matrix-matrix-matrix multiplication using distributed cache, for right input (cp/mr/sp)
+		PMAPMM,   //partitioned map-side matrix-matrix multiplication (sp)
 		PMM,      //permutation matrix multiplication using distributed cache, for left input (mr/cp)
 		TSMM,     //transpose-self matrix multiplication (cp/mr/sp)
 		ZIPMM,    //zip matrix multiplication (sp)
@@ -204,6 +206,9 @@ public class AggBinaryOp extends Hop implements MultiThreadedHop
 					case MAPMM_CHAIN:
 						constructSparkLopsMapMMChain( chain );
 						break;
+					case PMAPMM:
+						constructSparkLopsPMapMM();
+						break;
 					case CPMM:	
 						constructSparkLopsCPMM();
 						break;
@@ -285,6 +290,23 @@ public class AggBinaryOp extends Hop implements MultiThreadedHop
 				;
 			}
 			setVisited(VisitStatus.DONE);
+		}
+	}
+
+	
+	
+	@Override
+	public void computeMemEstimate(MemoTable memo) 
+	{
+		//extension of default compute memory estimate in order to 
+		//account for smaller tsmm memory requirements.
+		super.computeMemEstimate(memo);
+		
+		//tsmm left is guaranteed to require only X but not t(X), while
+		//tsmm right might have additional requirements to transpose X if sparse
+		MMTSJType mmtsj = checkTransposeSelf();
+		if( mmtsj.isLeft() && getInput().get(0).dimsKnown() ){
+			_memEstimate = _memEstimate - getInput().get(1)._memEstimate;
 		}
 	}
 
@@ -375,6 +397,7 @@ public class AggBinaryOp extends Hop implements MultiThreadedHop
 	
 	@Override
 	protected ExecType optFindExecType() 
+		throws HopsException 
 	{	
 		checkAndSetForcedPlatform();
 
@@ -404,6 +427,20 @@ public class AggBinaryOp extends Hop implements MultiThreadedHop
 			
 			//check for valid CP dimensions and matrix size
 			checkAndSetInvalidCPDimsAndSize();
+		}
+		
+		//spark-specific decision refinement (execute binary aggregate w/ left spark input and 
+		//single parent also in spark because it's likely cheap and reduces data transfer)
+		if( _etype == ExecType.CP && _etypeForced != ExecType.CP	
+			&& !(getInput().get(0) instanceof ReorgOp && ((ReorgOp)getInput().get(0)).getOp()==ReOrgOp.TRANSPOSE)
+			&& !(getInput().get(0) instanceof DataOp)  //input is not checkpoint
+			&& getInput().get(0).getParent().size()==1 //bagg is only parent	
+			&& !getInput().get(0).areDimsBelowThreshold() 
+			&& getInput().get(0).optFindExecType() == ExecType.SPARK
+			&& getInput().get(0).getOutputMemEstimate()>getOutputMemEstimate() )    
+		{
+			//pull unary aggregate into spark 
+			_etype = ExecType.SPARK;
 		}
 		
 		//mark for recompile (forever)
@@ -500,7 +537,7 @@ public class AggBinaryOp extends Hop implements MultiThreadedHop
 		throws HopsException, LopsException
 	{
 		int k = OptimizerUtils.getConstrainedNumThreads(_maxNumThreads);
-		Lop matmultCP = new MMTSJ(getInput().get((mmtsj==MMTSJType.LEFT)?1:0).constructLops(),
+		Lop matmultCP = new MMTSJ(getInput().get(mmtsj.isLeft()?1:0).constructLops(),
 				                 getDataType(), getValueType(), ExecType.CP, mmtsj, k);
 	
 		matmultCP.getOutputParameters().setDimensions(getDim1(), getDim2(), getRowsInBlock(), getColsInBlock(), getNnz());
@@ -639,7 +676,7 @@ public class AggBinaryOp extends Hop implements MultiThreadedHop
 	private void constructSparkLopsTSMM(MMTSJType mmtsj) 
 		throws HopsException, LopsException
 	{
-		Hop input = getInput().get((mmtsj==MMTSJType.LEFT)?1:0);
+		Hop input = getInput().get(mmtsj.isLeft()?1:0);
 		MMTSJ tsmm = new MMTSJ(input.constructLops(), getDataType(), getValueType(), ExecType.SPARK, mmtsj);
 		setOutputDimensions(tsmm);
 		setLineNumbers(tsmm);
@@ -739,6 +776,23 @@ public class AggBinaryOp extends Hop implements MultiThreadedHop
 	
 	/**
 	 * 
+	 * @throws LopsException
+	 * @throws HopsException
+	 */
+	private void constructSparkLopsPMapMM() 
+		throws LopsException, HopsException
+	{
+		PMapMult pmapmult = new PMapMult( 
+				getInput().get(0).constructLops(),
+				getInput().get(1).constructLops(), 
+				getDataType(), getValueType() );
+		setOutputDimensions(pmapmult);
+		setLineNumbers(pmapmult);
+		setLops(pmapmult);
+	}
+	
+	/**
+	 * 
 	 * @throws HopsException
 	 * @throws LopsException
 	 */
@@ -795,7 +849,6 @@ public class AggBinaryOp extends Hop implements MultiThreadedHop
 	
 	/**
 	 * 
-	 * @param chain
 	 * @throws LopsException
 	 * @throws HopsException
 	 */
@@ -1201,7 +1254,7 @@ public class AggBinaryOp extends Hop implements MultiThreadedHop
 	private void constructMRLopsTSMM(MMTSJType mmtsj) 
 		throws HopsException, LopsException
 	{
-		Hop input = getInput().get((mmtsj==MMTSJType.LEFT)?1:0);
+		Hop input = getInput().get(mmtsj.isLeft()?1:0);
 		
 		MMTSJ tsmm = new MMTSJ(input.constructLops(), getDataType(), getValueType(), ExecType.MR, mmtsj);
 		tsmm.getOutputParameters().setDimensions(getDim1(), getDim2(), getRowsInBlock(), getColsInBlock(), getNnz());
@@ -1664,6 +1717,17 @@ public class AggBinaryOp extends Hop implements MultiThreadedHop
 		//cp memory requirements on spark rdd operations with broadcasts)
 		_spBroadcastMemEstimate = 0;
 		
+		String m = OptimizerUtils.getMMMethod();
+		if(m.equals("rmm")){
+			FORCED_MMULT_METHOD = MMultMethod.RMM;
+		}else if(m.equals("mapmm_l")){
+			FORCED_MMULT_METHOD = MMultMethod.MAPMM_L;
+		}else if(m.equals("mapmm_r")){
+			FORCED_MMULT_METHOD = MMultMethod.MAPMM_R;
+		}else if(m.equals("cpmm")){
+			FORCED_MMULT_METHOD = MMultMethod.CPMM;
+		}
+		
 		// Step 0: check for forced mmultmethod
 		if( FORCED_MMULT_METHOD !=null )
 			return FORCED_MMULT_METHOD;
@@ -1728,8 +1792,17 @@ public class AggBinaryOp extends Hop implements MultiThreadedHop
 		
 		//memory estimates for remote execution (broadcast and outputs)
 		double footprint1 = getMapmmMemEstimate(m1_rows, m1_cols, m1_rpb, m1_cpb, m1_nnz, m2_rows, m2_cols, m2_rpb, m2_cpb, m2_nnz, 1, false);
-		double footprint2 = getMapmmMemEstimate(m1_rows, m1_cols, m1_rpb, m1_cpb, m1_nnz, m2_rows, m2_cols, m2_rpb, m2_cpb, m2_nnz, 2, false);		
-		
+		double footprint2 = getMapmmMemEstimate(m1_rows, m1_cols, m1_rpb, m1_cpb, m1_nnz, m2_rows, m2_cols, m2_rpb, m2_cpb, m2_nnz, 2, false);
+		System.out.println("****************************************************************************");
+		System.out.println("m1Size: " + m1Size);
+		System.out.println("m1SizeP: " + m1SizeP);
+		System.out.println("m2Size: " + m2Size);
+		System.out.println("m2SizeP: " + m2SizeP);
+		System.out.println("memBudgetLocal: " + memBudgetLocal + ", m1Size+m1SizeP or m2Size+m2SizeP should < memBudgetLocal");
+		System.out.println("footprint1: " + footprint1);
+		System.out.println("footprint2: " + footprint2);
+		System.out.println("memBudgetExec: " + memBudgetExec + ", footprint1 or footprint2 should < memBudgetExec");
+		System.out.println("****************************************************************************");
 		if (   (footprint1 < memBudgetExec && m1Size+m1SizeP < memBudgetLocal && m1_rows>=0 && m1_cols>=0)
 			|| (footprint2 < memBudgetExec && m2Size+m2SizeP < memBudgetLocal && m2_rows>=0 && m2_cols>=0) ) 
 		{
@@ -1805,7 +1878,10 @@ public class AggBinaryOp extends Hop implements MultiThreadedHop
 				                    numReducersRMM); //available reducers
 		// RMM total costs
 		double rmm_costs = (rmm_shuffle + rmm_io) / rmm_nred;
-		
+		System.out.println("rmm_costs: (rmm_shuffle + rmm_io) / rmm_nred");
+		System.out.printf("rmm_costs: (%d+%d)/%d\n", (int)rmm_shuffle, (int)rmm_io, (int)rmm_nred);
+		System.out.println("rmm_costs: " + rmm_costs);
+
 		// return total costs
 		return rmm_costs;
 	}
@@ -1850,7 +1926,10 @@ public class AggBinaryOp extends Hop implements MultiThreadedHop
 		// CPMM total costs
 		double cpmm_costs =  (cpmm_shuffle1+cpmm_io1)/cpmm_nred1  //cpmm phase1
 		                    +(cpmm_shuffle2+cpmm_io2)/cpmm_nred2; //cpmm phase2
-		
+		System.out.println("cpmm_costs: (cpmm_shuffle1+cpmm_io1)/cpmm_nred1+(cpmm_shuffle2+cpmm_io2)/cpmm_nred2");
+		System.out.printf("cpmm_costs: (%d+%d)/%d+(%d+%d)/%d\n",
+			(int)cpmm_shuffle1, (int)cpmm_io1, (int)cpmm_nred1, (int)cpmm_shuffle2, (int)cpmm_io2, (int)cpmm_nred2);
+		System.out.println("cpmm_costs: " + cpmm_costs);
 		//return total costs
 		return cpmm_costs;
 	}

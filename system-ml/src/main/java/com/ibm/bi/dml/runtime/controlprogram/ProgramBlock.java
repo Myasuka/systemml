@@ -18,7 +18,11 @@
 package com.ibm.bi.dml.runtime.controlprogram;
 
 import java.util.ArrayList;
+import java.util.Enumeration;
+import java.util.Stack;
 
+import com.ibm.bi.dml.debug.DMLFrame;
+import com.ibm.bi.dml.debug.DebugState;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
@@ -295,14 +299,27 @@ public class ProgramBlock
 		throws DMLRuntimeException
 	{	
 		try 
-		{	
+		{
+			System.out.println("currInst.getType(): " + currInst.getType());
+			System.out.println("###########################");
+			System.out.println("currInst.printMe(): ");
+			currInst.printMe();
+			ArrayList<String> varList = ec.getVarList();
+			System.out.println("varList in ec.getVarList(): ");
+			for (String s: varList){
+				System.out.println(s);
+			}
+
 			// start time measurement for statistics
 			long t0 = (DMLScript.STATISTICS || LOG.isTraceEnabled()) ? 
 					System.nanoTime() : 0;
 					
 			// pre-process instruction (debug state, inst patching, listeners)
 			Instruction tmp = currInst.preprocessInstruction( ec );
-			
+			System.out.println("tmp.getExtendedOpcode():" + tmp.getExtendedOpcode());
+			System.out.println("tmp.getType:" + tmp.getType());
+			System.out.println("tmp.getOpcode():" + tmp.getOpcode());
+			System.out.println("tmp.getGraphString():" + tmp.getGraphString());
 			// process actual instruction
 			tmp.processInstruction( ec );
 			

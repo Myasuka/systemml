@@ -37,6 +37,7 @@ import com.ibm.bi.dml.runtime.controlprogram.context.SparkExecutionContext;
 import com.ibm.bi.dml.runtime.controlprogram.parfor.stat.InfrastructureAnalyzer;
 import com.ibm.bi.dml.runtime.instructions.cp.Data;
 import com.ibm.bi.dml.runtime.instructions.cp.ScalarObject;
+import com.ibm.bi.dml.runtime.matrix.MatrixCharacteristics;
 import com.ibm.bi.dml.runtime.matrix.data.MatrixBlock;
 import com.ibm.bi.dml.runtime.matrix.data.OutputInfo;
 import com.ibm.bi.dml.runtime.matrix.data.SparseRow;
@@ -173,11 +174,15 @@ public class OptimizerUtils
 	
 	
 	/**
-	 * Enables parallel read/write of all text formats (textcell, csv, mm). 
+	 * Enables parallel read/write of all text formats (textcell, csv, mm)
+	 * and binary formats (binary block). 
 	 * 
 	 */
 	public static boolean PARALLEL_CP_READ_TEXTFORMATS = true;
 	public static boolean PARALLEL_CP_WRITE_TEXTFORMATS = true;
+	public static boolean PARALLEL_CP_READ_BINARYFORMATS = true;
+	public static boolean PARALLEL_CP_WRITE_BINARYFORMATS = true;
+	
 	
 	
 	/**
@@ -345,6 +350,8 @@ public class OptimizerUtils
 		if (!ConfigurationManager.getConfig().getBooleanValue(DMLConfig.CP_PARALLEL_TEXTIO)) {
 			PARALLEL_CP_READ_TEXTFORMATS = false;
 			PARALLEL_CP_WRITE_TEXTFORMATS = false;
+			PARALLEL_CP_READ_BINARYFORMATS = false;
+			PARALLEL_CP_WRITE_BINARYFORMATS = false;
 		}
 		else if(   InfrastructureAnalyzer.isJavaVersionLessThanJDK8() 
 			    && InfrastructureAnalyzer.getLocalParallelism() > 1   )
@@ -478,7 +485,11 @@ public class OptimizerUtils
 		//check if both output matrix and partitioned matrix fit into local mem budget
 		return (memMatrix + memPMatrix < getLocalMemBudget());
 	}
-	
+
+	public static  String getMMMethod(){
+
+		return ConfigurationManager.getConfig().getTextValue(DMLConfig.MM_METHOD);
+	}
 	/**
 	 * Returns the number of reducers that potentially run in parallel.
 	 * This is either just the configured value (SystemML config) or
@@ -554,6 +565,21 @@ public class OptimizerUtils
 	}
 	
 	/**
+	 * 
+	 * @return
+	 */
+	public static int getParallelBinaryReadParallelism()
+	{
+		if( !PARALLEL_CP_READ_BINARYFORMATS )
+			return 1; // sequential execution
+			
+		//compute degree of parallelism for parallel text read
+		double dop = InfrastructureAnalyzer.getLocalParallelism()
+				     * PARALLEL_CP_READ_PARALLELISM_MULTIPLIER;
+		return (int) Math.round(dop);
+	}
+	
+	/**
 	 * Returns the degree of parallelism used for parallel text write. 
 	 * This is computed as the number of virtual cores scales by the 
 	 * PARALLEL_WRITE_PARALLELISM_MULTIPLIER. If PARALLEL_WRITE_TEXTFORMATS
@@ -571,11 +597,38 @@ public class OptimizerUtils
 				     * PARALLEL_CP_WRITE_PARALLELISM_MULTIPLIER;
 		return (int) Math.round(dop);
 	}
-	
+
+	/**
+	 * 
+	 * @return
+	 */
+	public static int getParallelBinaryWriteParallelism()
+	{
+		if( !PARALLEL_CP_WRITE_BINARYFORMATS )
+			return 1; // sequential execution
+
+		//compute degree of parallelism for parallel text read
+		double dop = InfrastructureAnalyzer.getLocalParallelism()
+				     * PARALLEL_CP_WRITE_PARALLELISM_MULTIPLIER;
+		return (int) Math.round(dop);
+	}
 	
 	////////////////////////
 	// Memory Estimates   //
 	////////////////////////
+	
+	/**
+	 * 
+	 * @param mc
+	 * @return
+	 */
+	public static long estimateSizeExactSparsity(MatrixCharacteristics mc)
+	{
+		return estimateSizeExactSparsity(
+				mc.getRows(),
+				mc.getCols(),
+				mc.getNonZeros());
+	}
 	
 	/**
 	 * Estimates the footprint (in bytes) for an in-memory representation of a
@@ -610,6 +663,23 @@ public class OptimizerUtils
 	public static long estimateSizeExactSparsity(long nrows, long ncols, double sp) 
 	{
 		return MatrixBlock.estimateSizeInMemory(nrows,ncols,sp);
+	}
+	
+	/**
+	 * Estimates the footprint (in bytes) for a partitioned in-memory representation of a
+	 * matrix with the given matrix characteristics
+	 * 
+	 * @param mc
+	 * @return
+	 */
+	public static long estimatePartitionedSizeExactSparsity(MatrixCharacteristics mc)
+	{
+		return estimatePartitionedSizeExactSparsity(
+				mc.getRows(), 
+				mc.getCols(), 
+				mc.getRowsPerBlock(), 
+				mc.getColsPerBlock(), 
+				mc.getNonZeros());
 	}
 	
 	/**
