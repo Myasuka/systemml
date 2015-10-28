@@ -68,10 +68,6 @@ public class MatrixCharacteristics implements Serializable
 {
 	private static final long serialVersionUID = 8300479822915546000L;
 
-	@SuppressWarnings("unused")
-	private static final String _COPYRIGHT = "Licensed Materials - Property of IBM\n(C) Copyright IBM Corp. 2010, 2015\n" +
-	                                         "US Government Users Restricted Rights - Use, duplication  disclosure restricted by GSA ADP Schedule Contract with IBM Corp.";
-		
 	private long numRows = -1;
 	private long numColumns = -1;
 	private int numRowsPerBlock = 1;
@@ -314,8 +310,8 @@ public class MatrixCharacteristics implements Serializable
 			MMTSJMRInstruction mmtsj = (MMTSJMRInstruction)ins;
 			MMTSJType tstype = mmtsj.getMMTSJType();
 			MatrixCharacteristics mc = dims.get(mmtsj.input);
-			dimOut.set( (tstype==MMTSJType.LEFT)? mc.numColumns : mc.numRows,
-					     (tstype==MMTSJType.LEFT)? mc.numColumns : mc.numRows,
+			dimOut.set( tstype.isLeft() ? mc.numColumns : mc.numRows,
+					    tstype.isLeft() ? mc.numColumns : mc.numRows,
 					     mc.numRowsPerBlock, mc.numColumnsPerBlock );
 		}
 		else if( ins instanceof PMMJMRInstruction )

@@ -19,6 +19,7 @@ package com.ibm.bi.dml.test.integration.functions.binary.matrix_full_other;
 
 import java.util.HashMap;
 
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 import com.ibm.bi.dml.api.DMLScript;
@@ -36,6 +37,7 @@ public class FullDistributedMatrixMultiplicationTest extends AutomatedTestBase
 	
 	private final static String TEST_NAME = "FullDistributedMatrixMultiplication";
 	private final static String TEST_DIR = "functions/binary/matrix_full_other/";
+	private final static String TEST_CLASS_DIR = TEST_DIR + FullDistributedMatrixMultiplicationTest.class.getSimpleName() + "/";
 	private final static double eps = 1e-10;
 	
 	private final static int rowsA = 1501;
@@ -53,10 +55,18 @@ public class FullDistributedMatrixMultiplicationTest extends AutomatedTestBase
 		TestUtils.clearAssertionInformation();
 		addTestConfiguration(
 				TEST_NAME, 
-				new TestConfiguration(TEST_DIR, TEST_NAME, 
+				new TestConfiguration(TEST_CLASS_DIR, TEST_NAME, 
 				new String[] { "C" })   ); 
+		if (TEST_CACHE_ENABLED) {
+			setOutAndExpectedDeletionDisabled(true);
+		}
 	}
 
+	@BeforeClass
+	public static void init()
+	{
+		TestUtils.clearDirectory(TEST_DATA_DIR + TEST_CLASS_DIR);
+	}
 	
 	@Test
 	public void testDenseDenseMapmmMR() 
@@ -229,23 +239,34 @@ public class FullDistributedMatrixMultiplicationTest extends AutomatedTestBase
 		try
 		{
 			TestConfiguration config = getTestConfiguration(TEST_NAME);
+
+			double sparsityA = sparseM1?sparsity2:sparsity1;
+			double sparsityB = sparseM2?sparsity2:sparsity1;
+			
+			String TEST_CACHE_DIR = "";
+			if (TEST_CACHE_ENABLED) {
+				TEST_CACHE_DIR = String.valueOf(sparsityA) + "_" + String.valueOf(sparsityB) + "/";
+			}
 			
 			/* This is for running the junit test the new way, i.e., construct the arguments directly */
 			String HOME = SCRIPT_DIR + TEST_DIR;
+			String TARGET_IN = TEST_DATA_DIR + TEST_CLASS_DIR + INPUT_DIR;
+			String TARGET_OUT = TEST_DATA_DIR + TEST_CLASS_DIR + OUTPUT_DIR;
+			String TARGET_EXPECTED = TEST_DATA_DIR + TEST_CLASS_DIR + EXPECTED_DIR + TEST_CACHE_DIR;
 			fullDMLScriptName = HOME + TEST_NAME + ".dml";
-			programArgs = new String[]{"-args", HOME + INPUT_DIR + "A",
-					                        HOME + INPUT_DIR + "B",
-					                        HOME + OUTPUT_DIR + "C"    };
+			programArgs = new String[]{"-args", TARGET_IN + "A",
+                                            TARGET_IN + "B",
+                                            TARGET_OUT + "C"    };
 			fullRScriptName = HOME + TEST_NAME + ".R";
 			rCmd = "Rscript" + " " + fullRScriptName + " " + 
-			       HOME + INPUT_DIR + " " + HOME + EXPECTED_DIR;
+			       TARGET_IN + " " + TARGET_EXPECTED;
 			
-			loadTestConfiguration(config);
+			loadTestConfiguration(config, TEST_CACHE_DIR);
 	
 			//generate actual dataset
-			double[][] A = getRandomMatrix(rowsA, colsA, 0, 1, sparseM1?sparsity2:sparsity1, 12357); 
+			double[][] A = getRandomMatrix(rowsA, colsA, 0, 1, sparsityA, 12357); 
 			writeInputMatrixWithMTD("A", A, true);
-			double[][] B = getRandomMatrix(rowsB, colsB, 0, 1, sparseM2?sparsity2:sparsity1, 9873); 
+			double[][] B = getRandomMatrix(rowsB, colsB, 0, 1, sparsityB, 9873); 
 			writeInputMatrixWithMTD("B", B, true);
 	
 			runTest(true, false, null, -1); 

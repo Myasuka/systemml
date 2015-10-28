@@ -30,9 +30,14 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.log4j.Level;
 import org.apache.log4j.Logger;
 
+import com.ibm.bi.dml.hops.BinaryOp;
+import com.ibm.bi.dml.hops.DataGenOp;
+import com.ibm.bi.dml.hops.DataOp;
 import com.ibm.bi.dml.hops.FunctionOp;
 import com.ibm.bi.dml.hops.FunctionOp.FunctionType;
 import com.ibm.bi.dml.hops.Hop;
+import com.ibm.bi.dml.hops.Hop.DataOpTypes;
+import com.ibm.bi.dml.hops.Hop.OpOp2;
 import com.ibm.bi.dml.hops.HopsException;
 import com.ibm.bi.dml.hops.OptimizerUtils;
 import com.ibm.bi.dml.hops.Hop.VisitStatus;
@@ -116,8 +121,10 @@ public class InterProceduralAnalysis
 	private static final boolean INTRA_PROCEDURAL_ANALYSIS      = true; //propagate statistics across statement blocks (main/functions)	
 	private static final boolean PROPAGATE_KNOWN_UDF_STATISTICS = true; //propagate statistics for known external functions 
 	private static final boolean ALLOW_MULTIPLE_FUNCTION_CALLS  = true; //propagate consistent statistics from multiple calls 
-	private static final boolean REMOVE_UNUSED_FUNCTIONS        = true; //removed unused functions (inlined or never called)
+	private static final boolean REMOVE_UNUSED_FUNCTIONS        = true; //remove unused functions (inlined or never called)
 	private static final boolean FLAG_FUNCTION_RECOMPILE_ONCE   = true; //flag functions which require recompilation inside a loop for full function recompile
+	private static final boolean REMOVE_UNNECESSARY_CHECKPOINTS = true; //remove unnecessary checkpoints (unconditionally overwritten intermediates) 
+	private static final boolean REMOVE_CONSTANT_BINARY_OPS     = true; //remove constant binary operations (e.g., X*ones, where ones=matrix(1,...)) 
 	
 	static {
 		// for internal debugging only
@@ -173,8 +180,20 @@ public class InterProceduralAnalysis
 		}
 		
 		//step 4: flag functions with loops for 'recompile-on-entry'
-		if( FLAG_FUNCTION_RECOMPILE_ONCE ){
+		if( FLAG_FUNCTION_RECOMPILE_ONCE ) {
 			flagFunctionsForRecompileOnce( dmlp );
+		}
+		
+		//step 5: set global data flow properties
+		if( REMOVE_UNNECESSARY_CHECKPOINTS 
+			&& OptimizerUtils.isSparkExecutionMode() )
+		{
+			removeUnnecessaryCheckpoints(dmlp);
+		}
+		
+		//step 6: remove constant binary ops
+		if( REMOVE_CONSTANT_BINARY_OPS ) {
+			removeConstantBinaryOps(dmlp);
 		}
 	}
 	
@@ -737,7 +756,7 @@ public class InterProceduralAnalysis
 						if( dat instanceof MatrixObject )
 						{
 							MatrixObject moOut = (MatrixObject)dat;
-							MatrixCharacteristics mc = ((MatrixFormatMetaData)moOut.getMetaData()).getMatrixCharacteristics();
+							MatrixCharacteristics mc = moOut.getMatrixCharacteristics();
 							if( OptimizerUtils.estimateSizeExactSparsity(mc.getRows(), mc.getCols(), (mc.getNonZeros()>0)?((double)mc.getNonZeros())/mc.getRows()/mc.getCols():1.0)	
 							    < OptimizerUtils.estimateSize(moIn.getNumRows(), moIn.getNumColumns()) )
 							{
@@ -976,5 +995,254 @@ public class InterProceduralAnalysis
 		}
 		
 		return ret;
+	}
+	
+	/////////////////////////////
+	// REMOVE UNNECESSARY CHECKPOINTS
+	//////
+
+	/**
+	 * 
+	 * @param dmlp
+	 * @throws HopsException 
+	 */
+	private void removeUnnecessaryCheckpoints(DMLProgram dmlp) 
+		throws HopsException
+	{
+		//approach: scan over top-level program (guaranteed to be unconditional),
+		//collect checkpoints; determine if used before update; remove first checkpoint
+		//on second checkpoint if update in between and not used before update
+		
+		HashMap<String, Hop> chkpointCand = new HashMap<String, Hop>();
+		
+		for( StatementBlock sb : dmlp.getStatementBlocks() ) 
+		{
+			//prune candidates (used before updated)
+			Set<String> cands = new HashSet<String>(chkpointCand.keySet());
+			for( String cand : cands )
+				if( sb.variablesRead().containsVariable(cand) 
+					&& !sb.variablesUpdated().containsVariable(cand) ) 
+				{	
+					//note: variableRead might include false positives due to meta 
+					//data operations like nrow(X) or operations removed by rewrites 
+					//double check hops on basic blocks; otherwise worst-case
+					boolean skipRemove = false;
+					if( sb.get_hops() !=null ) {
+						Hop.resetVisitStatus(sb.get_hops());
+						skipRemove = true;
+						for( Hop root : sb.get_hops() )
+							skipRemove &= !HopRewriteUtils.rContainsRead(root, cand, false);
+					}					
+					if( !skipRemove )
+						chkpointCand.remove(cand);
+				}
+			
+			//prune candidates (updated in conditional control flow)
+			Set<String> cands2 = new HashSet<String>(chkpointCand.keySet());
+			if( sb instanceof IfStatementBlock || sb instanceof WhileStatementBlock 
+				|| sb instanceof ForStatementBlock )
+			{
+				for( String cand : cands2 )
+					if( sb.variablesUpdated().containsVariable(cand) ) {
+						chkpointCand.remove(cand);
+					}
+			}
+			//prune candidates (updated w/ multiple reads) 
+			else
+			{
+				for( String cand : cands2 )
+					if( sb.variablesUpdated().containsVariable(cand) && sb.get_hops() != null) 
+					{
+						ArrayList<Hop> hops = sb.get_hops();
+						Hop.resetVisitStatus(hops);
+						for( Hop root : hops )
+							if( root.getName().equals(cand) &&
+								!HopRewriteUtils.rHasSimpleReadChain(root, cand) ) {
+								chkpointCand.remove(cand);
+							}
+					}	
+			}
+		
+			//collect checkpoints and remove unnecessary checkpoints
+			ArrayList<Hop> tmp = collectCheckpoints(sb.get_hops());
+			for( Hop chkpoint : tmp ) {
+				if( chkpointCand.containsKey(chkpoint.getName()) ) {
+					chkpointCand.get(chkpoint.getName()).setRequiresCheckpoint(false);		
+				}
+				chkpointCand.put(chkpoint.getName(), chkpoint);
+			}
+			
+		}
+	}
+	
+	/**
+	 * 
+	 * @param roots
+	 * @return
+	 */
+	private ArrayList<Hop> collectCheckpoints(ArrayList<Hop> roots)
+	{
+		ArrayList<Hop> ret = new ArrayList<Hop>();	
+		if( roots != null ) {
+			Hop.resetVisitStatus(roots);
+			for( Hop root : roots )
+				rCollectCheckpoints(root, ret);
+		}
+		
+		return ret;
+	}
+	
+	/**
+	 * 
+	 * @param hop
+	 * @param checkpoints
+	 */
+	private void rCollectCheckpoints(Hop hop, ArrayList<Hop> checkpoints)
+	{
+		if( hop.getVisited()==VisitStatus.DONE )
+			return;
+
+		//handle leaf node for variable (checkpoint directly bound
+		//to logical variable name and not used)
+		if( hop.requiresCheckpoint() && hop.getParent().size()==1 
+			&& hop.getParent().get(0) instanceof DataOp
+			&& ((DataOp)hop.getParent().get(0)).getDataOpType()==DataOpTypes.TRANSIENTWRITE)
+		{
+			checkpoints.add(hop);
+		}
+		
+		//recursively process child nodes
+		for( Hop c : hop.getInput() )
+			rCollectCheckpoints(c, checkpoints);
+	
+		hop.setVisited(Hop.VisitStatus.DONE);
+	}
+	
+	/////////////////////////////
+	// REMOVE CONSTANT BINARY OPS
+	//////
+
+	/**
+	 * 
+	 * @param dmlp
+	 * @throws HopsException 
+	 */
+	private void removeConstantBinaryOps(DMLProgram dmlp) 
+		throws HopsException
+	{
+		//approach: scan over top-level program (guaranteed to be unconditional),
+		//collect ones=matrix(1,...); remove b(*)ones if not outer operation		
+		HashMap<String, Hop> mOnes = new HashMap<String, Hop>();
+		
+		for( StatementBlock sb : dmlp.getStatementBlocks() ) 
+		{
+			//pruning updated variables
+			for( String var : sb.variablesUpdated().getVariableNames() )
+				if( mOnes.containsKey( var ) )
+					mOnes.remove( var );
+			
+			//replace constant binary ops
+			if( !mOnes.isEmpty() )
+				rRemoveConstantBinaryOp(sb, mOnes);
+			
+			//collect matrices of ones from last-level statement blocks
+			if( !(sb instanceof IfStatementBlock || sb instanceof WhileStatementBlock 
+				  || sb instanceof ForStatementBlock) )
+			{
+				collectMatrixOfOnes(sb.get_hops(), mOnes);
+			}
+		}
+	}
+	
+	/**
+	 * 
+	 * @param roots
+	 * @param mOnes
+	 */
+	private void collectMatrixOfOnes(ArrayList<Hop> roots, HashMap<String,Hop> mOnes)
+	{
+		if( roots == null )
+			return;
+		
+		for( Hop root : roots )
+			if( root instanceof DataOp && ((DataOp)root).getDataOpType()==DataOpTypes.TRANSIENTWRITE
+			   && root.getInput().get(0) instanceof DataGenOp
+			   && ((DataGenOp)root.getInput().get(0)).hasConstantValue(1.0)) 
+			{
+				mOnes.put(root.getName(),root.getInput().get(0));
+			}
+	}
+	
+	/**
+	 * 
+	 * @param sb
+	 * @param mOnes
+	 * @throws HopsException 
+	 */
+	private void rRemoveConstantBinaryOp(StatementBlock sb, HashMap<String,Hop> mOnes) 
+		throws HopsException
+	{
+		if( sb instanceof IfStatementBlock )
+		{
+			IfStatementBlock isb = (IfStatementBlock) sb;
+			IfStatement istmt = (IfStatement)isb.getStatement(0);
+			for( StatementBlock c : istmt.getIfBody() )
+				rRemoveConstantBinaryOp(c, mOnes);
+			if( istmt.getElseBody() != null )
+				for( StatementBlock c : istmt.getElseBody() )
+					rRemoveConstantBinaryOp(c, mOnes);	
+		}
+		else if( sb instanceof WhileStatementBlock )
+		{
+			WhileStatementBlock wsb = (WhileStatementBlock) sb;
+			WhileStatement wstmt = (WhileStatement)wsb.getStatement(0);
+			for( StatementBlock c : wstmt.getBody() )
+				rRemoveConstantBinaryOp(c, mOnes);
+		}
+		else if( sb instanceof ForStatementBlock )
+		{
+			ForStatementBlock fsb = (ForStatementBlock) sb;
+			ForStatement fstmt = (ForStatement)fsb.getStatement(0);
+			for( StatementBlock c : fstmt.getBody() )
+				rRemoveConstantBinaryOp(c, mOnes);	
+		}
+		else
+		{
+			if( sb.get_hops() != null ){
+				Hop.resetVisitStatus(sb.get_hops());
+				for( Hop hop : sb.get_hops() )
+					rRemoveConstantBinaryOp(hop, mOnes);
+			}
+		}
+	}
+	
+	/**
+	 * 
+	 * @param hop
+	 * @param mOnes
+	 */
+	private void rRemoveConstantBinaryOp(Hop hop, HashMap<String,Hop> mOnes)
+	{
+		if( hop.getVisited()==VisitStatus.DONE )
+			return;
+
+		if( hop instanceof BinaryOp && ((BinaryOp)hop).getOp()==OpOp2.MULT
+			&& !((BinaryOp) hop).isOuterVectorOperator()
+			&& hop.getInput().get(0).getDataType()==DataType.MATRIX
+			&& hop.getInput().get(1) instanceof DataOp
+			&& mOnes.containsKey(hop.getInput().get(1).getName()) )
+		{
+			//replace matrix of ones with literal 1 (later on removed by
+			//algebraic simplification rewrites; otherwise more complex
+			//recursive processing of childs and rewiring required)
+			HopRewriteUtils.removeChildReferenceByPos(hop, hop.getInput().get(1), 1);
+			HopRewriteUtils.addChildReference(hop, new LiteralOp("1",1), 1);
+		}
+		
+		//recursively process child nodes
+		for( Hop c : hop.getInput() )
+			rRemoveConstantBinaryOp(c, mOnes);
+	
+		hop.setVisited(Hop.VisitStatus.DONE);		
 	}
 }

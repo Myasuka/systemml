@@ -53,10 +53,6 @@ import com.ibm.bi.dml.udf.Matrix;
  */
 public class DataConverter 
 {
-	@SuppressWarnings("unused")
-	private static final String _COPYRIGHT = "Licensed Materials - Property of IBM\n(C) Copyright IBM Corp. 2010, 2015\n" +
-	                                         "US Government Users Restricted Rights - Use, duplication  disclosure restricted by GSA ADP Schedule Contract with IBM Corp.";
-		
 	
 	//////////////
 	// READING and WRITING of matrix blocks to/from HDFS
@@ -374,6 +370,42 @@ public class DataConverter
 		return ret;
 	}
 	
+	
+	/**
+	 * 
+	 * @param mb
+	 * @return
+	 */
+	public static int[] convertToIntVector( MatrixBlock mb)
+	{
+		int rows = mb.getNumRows();
+		int cols = mb.getNumColumns();
+		int[] ret = new int[rows*cols]; //0-initialized
+		
+		
+		if( mb.getNonZeros() > 0 )
+		{
+			if( mb.isInSparseFormat() )
+			{
+				SparseRowsIterator iter = mb.getSparseRowsIterator();
+				while( iter.hasNext() )
+				{
+					IJV cell = iter.next();
+					ret[cell.i*rows+cell.j] = (int)cell.v;
+				}
+			}
+			else
+			{
+				//memcopy row major representation if at least 1 non-zero
+				if( !mb.isEmptyBlock(false) )
+					for( int i=0; i<rows; i++ )
+						for( int j=0; j<cols; j++ )
+							ret[i*cols+j] = (int)(mb.getValueDenseUnsafe(i, j));
+			}
+		}
+		
+		return ret;
+	}
 	
 	/**
 	 * 

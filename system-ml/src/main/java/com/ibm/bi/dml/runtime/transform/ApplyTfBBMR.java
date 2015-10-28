@@ -1,4 +1,5 @@
 /**
+ /**
  * (C) Copyright IBM Corp. 2010, 2015
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,19 +21,18 @@ import java.util.HashSet;
 
 import org.apache.hadoop.filecache.DistributedCache;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.mapred.Counters.Group;
 import org.apache.hadoop.mapred.JobClient;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.RunningJob;
-import org.apache.hadoop.mapred.Counters.Group;
 
 import com.ibm.bi.dml.conf.ConfigurationManager;
 import com.ibm.bi.dml.conf.DMLConfig;
-import com.ibm.bi.dml.parser.DataExpression;
 import com.ibm.bi.dml.runtime.instructions.InstructionParser;
 import com.ibm.bi.dml.runtime.instructions.mr.CSVReblockInstruction;
 import com.ibm.bi.dml.runtime.matrix.CSVReblockMR;
-import com.ibm.bi.dml.runtime.matrix.JobReturn;
 import com.ibm.bi.dml.runtime.matrix.CSVReblockMR.BlockRow;
+import com.ibm.bi.dml.runtime.matrix.JobReturn;
 import com.ibm.bi.dml.runtime.matrix.WriteCSVMR;
 import com.ibm.bi.dml.runtime.matrix.data.CSVFileFormatProperties;
 import com.ibm.bi.dml.runtime.matrix.data.InputInfo;
@@ -54,7 +54,6 @@ import com.ibm.bi.dml.runtime.util.MapReduceTool;
 
 @SuppressWarnings("deprecation")
 public class ApplyTfBBMR {
-	
 	
 	public static JobReturn runJob(String inputPath, String rblkInst, String otherInst, String specPath, String mapsPath, String tmpPath, String outputPath, String partOffsetsFile, CSVFileFormatProperties inputDataProperties, long numRows, long numColsBefore, long numColsAfter, int replication, String headerLine) throws Exception {
 		
@@ -132,7 +131,7 @@ public class ApplyTfBBMR {
 		job.set(MRJobConfiguration.TF_DELIM, 		inputDataProperties.getDelim());
 		if ( inputDataProperties.getNAStrings() != null)
 			// Adding "dummy" string to handle the case of na_strings = ""
-			job.set(MRJobConfiguration.TF_NA_STRINGS, inputDataProperties.getNAStrings() + DataExpression.DELIM_NA_STRING_SEP + "dummy");
+			job.set(MRJobConfiguration.TF_NA_STRINGS, TfUtils.prepNAStrings(inputDataProperties.getNAStrings()) );
 		job.set(MRJobConfiguration.TF_SPEC_FILE, 	specPath);
 		job.set(MRJobConfiguration.TF_SMALLEST_FILE, CSVReblockMR.findSmallestFile(job, inputPath));
 		job.set(MRJobConfiguration.OUTPUT_MATRICES_DIRS_CONFIG, outputPath);
@@ -146,12 +145,8 @@ public class ApplyTfBBMR {
 		
 		MapReduceTool.deleteFileIfExistOnHDFS(cachefile, job);
 		
-		long tx_numRows = runjob.getCounters().findCounter(MRJobConfiguration.DataTransformCounters.TRANSFORMED_NUM_ROWS).getCounter();
-		long tx_numCols = runjob.getCounters().findCounter(MRJobConfiguration.DataTransformCounters.TRANSFORMED_NUM_COLS).getCounter();
-		
 		Group group=runjob.getCounters().getGroup(MRJobConfiguration.NUM_NONZERO_CELLS);
 		for(int i=0; i<resultIndexes.length; i++) {
-			ret.stats[i].setDimension(tx_numRows, tx_numCols);
 			ret.stats[i].setNonZeros(group.getCounter(Integer.toString(i)));
 		}
 		return new JobReturn(ret.stats, runjob.isSuccessful());

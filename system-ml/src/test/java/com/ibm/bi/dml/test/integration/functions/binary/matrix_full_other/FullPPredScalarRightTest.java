@@ -19,6 +19,7 @@ package com.ibm.bi.dml.test.integration.functions.binary.matrix_full_other;
 
 import java.util.HashMap;
 
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 import com.ibm.bi.dml.api.DMLScript.RUNTIME_PLATFORM;
@@ -42,6 +43,7 @@ public class FullPPredScalarRightTest extends AutomatedTestBase
 	
 	private final static String TEST_NAME1 = "PPredScalarRightTest";
 	private final static String TEST_DIR = "functions/binary/matrix_full_other/";
+	private final static String TEST_CLASS_DIR = TEST_DIR + FullPPredScalarRightTest.class.getSimpleName() + "/";
 	private final static double eps = 1e-10;
 	
 	private final static int rows1 = 1072;
@@ -63,9 +65,17 @@ public class FullPPredScalarRightTest extends AutomatedTestBase
 	@Override
 	public void setUp() 
 	{
-		addTestConfiguration( TEST_NAME1, new TestConfiguration(TEST_DIR, TEST_NAME1, new String[] { "B" })   ); 
+		addTestConfiguration( TEST_NAME1, new TestConfiguration(TEST_CLASS_DIR, TEST_NAME1, new String[] { "B" })   );
+		if (TEST_CACHE_ENABLED) {
+			setOutAndExpectedDeletionDisabled(true);
+		}
 	}
 
+	@BeforeClass
+	public static void init()
+	{
+		TestUtils.clearDirectory(TEST_DATA_DIR + TEST_CLASS_DIR);
+	}
 	
 	@Test
 	public void testPPredGreaterZeroDenseCP() 
@@ -370,6 +380,11 @@ public class FullPPredScalarRightTest extends AutomatedTestBase
 		double sparsity = sparse ? sparsity2 : sparsity1;
 		double constant = zero ? 0 : 0.5;
 		
+		String TEST_CACHE_DIR = "";
+		if (TEST_CACHE_ENABLED) {
+			TEST_CACHE_DIR = type.ordinal() + "_" + constant + "_" + sparsity + "/";
+		}
+		
 		//rtplatform for MR
 		RUNTIME_PLATFORM platformOld = rtplatform;
 		rtplatform = (et==ExecType.MR) ? RUNTIME_PLATFORM.HADOOP : RUNTIME_PLATFORM.HYBRID;
@@ -380,16 +395,19 @@ public class FullPPredScalarRightTest extends AutomatedTestBase
 			
 			/* This is for running the junit test the new way, i.e., construct the arguments directly */
 			String HOME = SCRIPT_DIR + TEST_DIR;
+			String TARGET_IN = TEST_DATA_DIR + TEST_CLASS_DIR + INPUT_DIR;
+			String TARGET_OUT = TEST_DATA_DIR + TEST_CLASS_DIR + OUTPUT_DIR;
+			String TARGET_EXPECTED = TEST_DATA_DIR + TEST_CLASS_DIR + EXPECTED_DIR + TEST_CACHE_DIR;
 			fullDMLScriptName = HOME + TEST_NAME + ".dml";
-			programArgs = new String[]{"-args", HOME + INPUT_DIR + "A" ,
-					                        Integer.toString(type.ordinal()),
-					                        Double.toString(constant),
-					                        HOME + OUTPUT_DIR + "B"    };
+			programArgs = new String[]{"-args", TARGET_IN + "A" ,
+                                            Integer.toString(type.ordinal()),
+                                            Double.toString(constant),
+                                            TARGET_OUT + "B"    };
 			fullRScriptName = HOME + TEST_NAME + ".R";
 			rCmd = "Rscript" + " " + fullRScriptName + " " + 
-			       HOME + INPUT_DIR + " " + type.ordinal() + " " + constant + " " + HOME + EXPECTED_DIR;
+			       TARGET_IN + " " + type.ordinal() + " " + constant + " " + TARGET_EXPECTED;
 			
-			loadTestConfiguration(config);
+			loadTestConfiguration(config, TEST_CACHE_DIR);
 	
 			//generate actual dataset
 			double[][] A = getRandomMatrix(rows, cols, -1, 1, sparsity, 7); 

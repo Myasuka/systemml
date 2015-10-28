@@ -249,6 +249,7 @@ public class MRJobConfiguration
 	public static final String TF_HEADER		= "transform.header.line";
 	public static final String TF_SPEC_FILE 	= "transform.specification.file";
 	public static final String TF_TMP_LOC    	= "transform.temp.location";
+	public static final String TF_TRANSFORM     = "transform.omit.na.rows";
 	
 	public static final String TF_SMALLEST_FILE= "transform.smallest.file";
 	public static final String TF_OFFSETS_FILE = "transform.offsets.file";
@@ -265,8 +266,7 @@ public class MRJobConfiguration
 	}*/
 	
 	public static enum DataTransformCounters { 
-		TRANSFORMED_NUM_ROWS, 
-		TRANSFORMED_NUM_COLS // Number of columns in the transformed data
+		TRANSFORMED_NUM_ROWS
 	};
 	
 	public static final int getMiscMemRequired(JobConf job)

@@ -21,22 +21,24 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Random;
 
+import org.apache.hadoop.mapred.SequenceFileOutputFormat;
 import org.apache.spark.Accumulator;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaRDD;
-import org.apache.spark.api.java.function.PairFlatMapFunction;
-import org.apache.spark.api.java.function.PairFunction;
 
 import com.ibm.bi.dml.parser.Expression.ValueType;
 import com.ibm.bi.dml.runtime.DMLRuntimeException;
 import com.ibm.bi.dml.runtime.DMLUnsupportedOperationException;
+import com.ibm.bi.dml.runtime.controlprogram.caching.MatrixObject;
 import com.ibm.bi.dml.runtime.controlprogram.context.ExecutionContext;
 import com.ibm.bi.dml.runtime.controlprogram.context.SparkExecutionContext;
 import com.ibm.bi.dml.runtime.instructions.Instruction;
 import com.ibm.bi.dml.runtime.instructions.InstructionUtils;
 import com.ibm.bi.dml.runtime.instructions.cp.CPOperand;
-import com.ibm.bi.dml.runtime.instructions.spark.functions.ComputeNonZerosBlockFunction;
+import com.ibm.bi.dml.runtime.instructions.spark.functions.ComputeBinaryBlockNnzFunction;
 import com.ibm.bi.dml.runtime.instructions.spark.functions.ConvertMatrixBlockToIJVLines;
+import com.ibm.bi.dml.runtime.instructions.spark.utils.RDDConverterUtils;
+import com.ibm.bi.dml.runtime.instructions.spark.utils.SparkUtils;
 import com.ibm.bi.dml.runtime.matrix.MatrixCharacteristics;
 import com.ibm.bi.dml.runtime.matrix.data.CSVFileFormatProperties;
 import com.ibm.bi.dml.runtime.matrix.data.FileFormatProperties;
@@ -44,19 +46,16 @@ import com.ibm.bi.dml.runtime.matrix.data.MatrixBlock;
 import com.ibm.bi.dml.runtime.matrix.data.MatrixIndexes;
 import com.ibm.bi.dml.runtime.matrix.data.OutputInfo;
 import com.ibm.bi.dml.runtime.util.MapReduceTool;
-import com.ibm.bi.dml.runtime.util.UtilFunctions;
-
-import org.apache.hadoop.mapred.SequenceFileOutputFormat;
-
-import scala.Tuple2;
 
 public class WriteSPInstruction extends SPInstruction 
-{
-	
+{	
 	private CPOperand input1 = null; 
 	private CPOperand input2 = null;
 	private CPOperand input3 = null;
 	private FileFormatProperties formatProperties;
+	
+	//scalars might occur for transform
+	private boolean isInputMatrixBlock = true; 
 	
 	public WriteSPInstruction(String opcode, String istr) {
 		super(opcode, istr);
@@ -83,7 +82,7 @@ public class WriteSPInstruction extends SPInstruction
 		
 		// All write instructions have 3 parameters, except in case of delimited/csv file.
 		// Write instructions for csv files also include three additional parameters (hasHeader, delimiter, sparse)
-		if ( parts.length != 4 && parts.length != 7 ) {
+		if ( parts.length != 4 && parts.length != 8 ) {
 			throw new DMLRuntimeException("Invalid number of operands in write instruction: " + str);
 		}
 		
@@ -102,6 +101,9 @@ public class WriteSPInstruction extends SPInstruction
 			boolean sparse = Boolean.parseBoolean(parts[6]);
 			FileFormatProperties formatProperties = new CSVFileFormatProperties(hasHeader, delim, sparse);
 			inst.setFormatProperties(formatProperties);
+			
+			boolean isInputMB = Boolean.parseBoolean(parts[7]);
+			inst.setInputMatrixBlock(isInputMB);
 		}
 		return inst;		
 	}
@@ -115,7 +117,14 @@ public class WriteSPInstruction extends SPInstruction
 		formatProperties = prop;
 	}
 	
-
+	public void setInputMatrixBlock(boolean isMB) {
+		isInputMatrixBlock = isMB;
+	}
+	
+	public boolean isInputMatrixBlock() {
+		return isInputMatrixBlock;
+	}
+	
 	@Override
 	public void processInstruction(ExecutionContext ec)
 			throws DMLRuntimeException, DMLUnsupportedOperationException 
@@ -138,21 +147,20 @@ public class WriteSPInstruction extends SPInstruction
 			JavaPairRDD<MatrixIndexes,MatrixBlock> in1 = sec.getBinaryBlockRDDHandleForVariable( input1.getName() );
 			MatrixCharacteristics mc = sec.getMatrixCharacteristics(input1.getName());
 			
-			//recompute nnz via accumulator (save file will also trigger nnz maintenance)
-			Accumulator<Double> aNnz = sec.getSparkContext().accumulator(0L);
-			in1 = in1.mapValues(new ComputeNonZerosBlockFunction(aNnz));
-			
 			if(    oi == OutputInfo.MatrixMarketOutputInfo
 				|| oi == OutputInfo.TextCellOutputInfo     ) 
 			{
-				JavaRDD<String> header = null;
+				//recompute nnz if necessary (required for header if matrix market)
+				if ( isInputMatrixBlock && !mc.nnzKnown() )
+					mc.setNonZeros( SparkUtils.computeNNZFromBlocks(in1) );
 				
+				JavaRDD<String> header = null;				
 				if(outFmt.equalsIgnoreCase("matrixmarket")) {
 					ArrayList<String> headerContainer = new ArrayList<String>(1);
 					// First output MM header
 					String headerStr = "%%MatrixMarket matrix coordinate real general\n" +
 							// output number of rows, number of columns and number of nnz
-							mc.getRows() + " " + mc.getCols() + " " + mc.getNonZeros() ;
+							mc.getRows() + " " + mc.getCols() + " " + mc.getNonZeros();
 					headerContainer.add(headerStr);
 					header = sec.getSparkContext().parallelize(headerContainer);
 				}
@@ -165,43 +173,73 @@ public class WriteSPInstruction extends SPInstruction
 			}
 			else if( oi == OutputInfo.CSVOutputInfo ) 
 			{
-				String sep = ",";
-				boolean sparse = false;
-				boolean hasHeader = false;
-				if(formatProperties != null) {
-					sep = ((CSVFileFormatProperties) formatProperties).getDelim();
-					sparse = ((CSVFileFormatProperties) formatProperties).isSparse();
-					hasHeader = ((CSVFileFormatProperties) formatProperties).hasHeader();
+				JavaRDD<String> out = null;
+				Accumulator<Double> aNnz = null;
+				
+				if ( isInputMatrixBlock ) {
+					//piggyback nnz computation on actual write
+					if( !mc.nnzKnown() ) {
+						aNnz = sec.getSparkContext().accumulator(0L);
+						in1 = in1.mapValues(new ComputeBinaryBlockNnzFunction(aNnz));
+					}	
+					
+					out = RDDConverterUtils.binaryBlockToCsv(in1, mc, 
+							(CSVFileFormatProperties) formatProperties, true);
 				}
-				JavaRDD<String> out = in1.flatMapToPair(new ExtractRows(mc.getRows(), mc.getCols(), mc.getRowsPerBlock(), mc.getColsPerBlock(), sep, sparse)).groupByKey()
-										.mapToPair(new ConcatenateColumnsInRow(mc.getCols(), mc.getColsPerBlock(), sep)).sortByKey(true).values();
-				if(hasHeader) {
-					StringBuffer buf = new StringBuffer();
-		    		for(int j = 1; j < mc.getCols(); j++) {
-		    			if(j != 1) {
-		    				buf.append(sep);
-		    			}
-		    			buf.append("C" + j);
-		    		}
-		    		ArrayList<String> headerContainer = new ArrayList<String>(1);
-		    		JavaRDD<String> header = sec.getSparkContext().parallelize(headerContainer);
-		    		out = header.union(out);
+				else 
+				{
+					// This case is applicable when the CSV output from transform() is written out
+					@SuppressWarnings("unchecked")
+					JavaPairRDD<Long,String> rdd = (JavaPairRDD<Long, String>) ((MatrixObject) sec.getVariable(input1.getName())).getRDDHandle().getRDD();
+					out = rdd.values(); 
+
+					String sep = ",";
+					boolean hasHeader = false;
+					if(formatProperties != null) {
+						sep = ((CSVFileFormatProperties) formatProperties).getDelim();
+						hasHeader = ((CSVFileFormatProperties) formatProperties).hasHeader();
+					}
+					
+					if(hasHeader) {
+						StringBuffer buf = new StringBuffer();
+			    		for(int j = 1; j < mc.getCols(); j++) {
+			    			if(j != 1) {
+			    				buf.append(sep);
+			    			}
+			    			buf.append("C" + j);
+			    		}
+			    		ArrayList<String> headerContainer = new ArrayList<String>(1);
+			    		headerContainer.add(0, buf.toString());
+			    		JavaRDD<String> header = sec.getSparkContext().parallelize(headerContainer);
+			    		out = header.union(out);
+					}
 				}
 				
 				customSaveTextFile(out, fname, false);
+				
+				if( isInputMatrixBlock && !mc.nnzKnown() )
+					mc.setNonZeros((long)aNnz.value().longValue());
 			}
 			else if( oi == OutputInfo.BinaryBlockOutputInfo ) {
+				//piggyback nnz computation on actual write
+				Accumulator<Double> aNnz = null;
+				if( !mc.nnzKnown() ) {
+					aNnz = sec.getSparkContext().accumulator(0L);
+					in1 = in1.mapValues(new ComputeBinaryBlockNnzFunction(aNnz));
+				}
+				
+				//save binary block rdd on hdfs
 				in1.saveAsHadoopFile(fname, MatrixIndexes.class, MatrixBlock.class, SequenceFileOutputFormat.class);
-			}
-			else if( oi == OutputInfo.BinaryCellOutputInfo ) {
-				throw new DMLRuntimeException("Writing using binary cell format is not implemented in WriteSPInstruction");
+				
+				if( !mc.nnzKnown() )
+					mc.setNonZeros((long)aNnz.value().longValue());
 			}
 			else {
+				//unsupported formats: binarycell (not externalized)
 				throw new DMLRuntimeException("Unexpected data format: " + outFmt);
 			}
 			
-			//update nnz and write meta data file
-			mc.setNonZeros( UtilFunctions.toLong(aNnz.value()) );
+			// write meta data file
 			MapReduceTool.writeMetaDataFile (fname + ".mtd", ValueType.DOUBLE, mc, oi, formatProperties);	
 		}
 		catch(IOException ex)
@@ -210,6 +248,13 @@ public class WriteSPInstruction extends SPInstruction
 		}
 	}
 	
+	/**
+	 * 
+	 * @param rdd
+	 * @param fname
+	 * @param inSingleFile
+	 * @throws DMLRuntimeException
+	 */
 	private void customSaveTextFile(JavaRDD<String> rdd, String fname, boolean inSingleFile) 
 		throws DMLRuntimeException 
 	{
@@ -241,88 +286,5 @@ public class WriteSPInstruction extends SPInstruction
 		else {
 			rdd.saveAsTextFile(fname);
 		}
-	}
-	
-	// Returns rowCellIndex, <columnBlockIndex, csv string>
-	public static class ExtractRows implements PairFlatMapFunction<Tuple2<MatrixIndexes,MatrixBlock>, Long, Tuple2<Long, String>> {
-
-		private static final long serialVersionUID = 5185943302519860487L;
-		
-		long rlen; int brlen;
-		long clen; int bclen;
-		String sep; boolean sparse;
-		public ExtractRows(long rlen, long clen, int brlen, int bclen, String sep, boolean sparse) {
-			this.rlen = rlen;
-			this.brlen = brlen;
-			this.clen = clen;
-			this.bclen = bclen;
-			this.sep = sep;
-			this.sparse = sparse;
-		}
-
-		@Override
-		public Iterable<Tuple2<Long, Tuple2<Long, String>>> call(Tuple2<MatrixIndexes, MatrixBlock> arg0) 
-			throws Exception 
-		{
-			MatrixIndexes ix = arg0._1();
-			MatrixBlock mb = arg0._2();
-			
-			long columnBlockIndex = ix.getColumnIndex();
-			long cellIndexTopRow = UtilFunctions.cellIndexCalculation(ix.getRowIndex(), brlen, 0);
-    		
-    		ArrayList<Tuple2<Long, Tuple2<Long, String>>> retVal = new ArrayList<Tuple2<Long,Tuple2<Long,String>>>(mb.getNumRows());
-    		for(int i = 0; i < mb.getNumRows(); i++) {
-    			StringBuffer buf = new StringBuffer();
-	    		for(int j = 0; j < mb.getNumColumns(); j++) {
-	    			if(j != 0) {
-	    				buf.append(sep);
-	    			}
-	    			double val = mb.quickGetValue(i, j);
-	    			if(!(sparse && val == 0))
-	    				buf.append(val);
-				}
-	    		retVal.add(new Tuple2<Long, Tuple2<Long,String>>(cellIndexTopRow, new Tuple2<Long,String>(columnBlockIndex, buf.toString())));
-	    		cellIndexTopRow++;
-    		}
-    		
-			return retVal;
-		}
-		
-	}
-	
-	// Returns rowCellIndex, csv string
-	public static class ConcatenateColumnsInRow implements PairFunction<Tuple2<Long,Iterable<Tuple2<Long,String>>>, Long, String> {
-
-		private static final long serialVersionUID = -8529245417692255289L;
-		
-		long numColBlocks = -1;
-		String sep;
-		
-		public ConcatenateColumnsInRow(long clen, int bclen, String sep) {
-			numColBlocks = (long) Math.ceil((double)clen / (double)bclen);
-			this.sep = sep;
-		}
-		
-		public String getValue(Iterable<Tuple2<Long, String>> collection, Long key) throws Exception {
-			for(Tuple2<Long, String> entry : collection) {
-				if(entry._1.equals(key)) {
-					return entry._2;
-				}
-			}
-			throw new Exception("No value found for the key:" + key);
-		}
-
-		@Override
-		public Tuple2<Long, String> call(Tuple2<Long, Iterable<Tuple2<Long, String>>> kv) throws Exception {
-			StringBuffer buf = new StringBuffer();
-			for(long i = 1; i <= numColBlocks; i++) {
-				if(i != 1) {
-					buf.append(sep);
-				}
-				buf.append(getValue(kv._2, i));
-			}
-			return new Tuple2<Long, String>(kv._1, buf.toString());
-		}
-		
 	}
 }

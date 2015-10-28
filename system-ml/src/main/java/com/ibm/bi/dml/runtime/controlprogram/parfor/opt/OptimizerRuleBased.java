@@ -84,6 +84,8 @@ import com.ibm.bi.dml.runtime.controlprogram.parfor.stat.InfrastructureAnalyzer;
 import com.ibm.bi.dml.runtime.instructions.Instruction;
 import com.ibm.bi.dml.runtime.instructions.cp.Data;
 import com.ibm.bi.dml.runtime.instructions.cp.FunctionCallCPInstruction;
+import com.ibm.bi.dml.runtime.instructions.spark.data.RDDObject;
+import com.ibm.bi.dml.runtime.matrix.MatrixCharacteristics;
 import com.ibm.bi.dml.runtime.matrix.MatrixFormatMetaData;
 import com.ibm.bi.dml.runtime.matrix.data.MatrixBlock;
 import com.ibm.bi.dml.runtime.matrix.data.OutputInfo;
@@ -112,10 +114,11 @@ import com.ibm.bi.dml.yarn.ropt.YarnClusterAnalyzer;
  * - 16) rewrite enable runtime piggybacking
  * - 17) rewrite inject spark loop checkpointing 
  * - 18) rewrite inject spark repartition (for zipmm)
- * - 19) rewrite set result merge 		 		 
- * - 20) rewrite set recompile memory budget
- * - 21) rewrite remove recursive parfor	
- * - 22) rewrite remove unnecessary parfor		
+ * - 19) rewrite set spark eager rdd caching 
+ * - 20) rewrite set result merge 		 		 
+ * - 21) rewrite set recompile memory budget
+ * - 22) rewrite remove recursive parfor	
+ * - 23) rewrite remove unnecessary parfor		
  * 	 
  * TODO fuse also result merge into fused data partitioning and execute
  *      (for writing the result directly from execute we need to partition
@@ -298,22 +301,25 @@ public class OptimizerRuleBased extends Optimizer
 				
 				//rewrite 18: repartition read-only inputs for zipmm 
 				rewriteInjectSparkRepartition( pn, ec.getVariables() );
+				
+				//rewrite 19: eager caching for checkpoint rdds
+				rewriteSetSparkEagerRDDCaching( pn, ec.getVariables() );
 			}
 		}	
 	
-		// rewrite 19: set result merge
+		// rewrite 20: set result merge
 		rewriteSetResultMerge( pn, ec.getVariables(), true );
 		
-		// rewrite 20: set local recompile memory budget
+		// rewrite 21: set local recompile memory budget
 		rewriteSetRecompileMemoryBudget( pn );
 		
 		///////
 		//Final rewrites for cleanup / minor improvements
 		
-		// rewrite 21: parfor (in recursive functions) to for
+		// rewrite 22: parfor (in recursive functions) to for
 		rewriteRemoveRecursiveParFor( pn, ec.getVariables() );
 		
-		// rewrite 22: parfor (par=1) to for 
+		// rewrite 23: parfor (par=1) to for 
 		rewriteRemoveUnnecessaryParFor( pn );
 		
 		//info optimization result
@@ -1424,11 +1430,17 @@ public class OptimizerRuleBased extends Optimizer
 			kMax = Math.min( kMax, (int)Math.floor( mem / M ) );
 			kMax = Math.max( kMax, 1);
 			
+			//constrain max parfor parallelism by problem size
+			int parforK = (int)((_N<kMax)? _N : kMax);
+			
+			//set parfor degree of parallelism
+			pfpb.setDegreeOfParallelism(parforK);
+			n.setK(parforK);	
+			
 			//distribute remaining parallelism 
-			int tmpK = (int)((_N<kMax)? _N : kMax);
-			pfpb.setDegreeOfParallelism(tmpK);
-			n.setK(tmpK);	
-			rAssignRemainingParallelism( n,(int)Math.ceil(((double)(kMax-tmpK+1))/tmpK) ); //1 if tmpK=kMax, otherwise larger
+			int remainParforK = (int)Math.ceil(((double)(kMax-parforK+1))/parforK);
+			int remainOpsK = Math.max(_lkmaxCP / parforK, 1);
+			rAssignRemainingParallelism( n, remainParforK, remainOpsK ); 
 		}
 		else // ExecType.MR/ExecType.SPARK
 		{
@@ -1461,7 +1473,7 @@ public class OptimizerRuleBased extends Optimizer
 				kMax = 1;
 					
 			//distribute remaining parallelism and recompile parallel instructions
-			rAssignRemainingParallelism( n, kMax ); 
+			rAssignRemainingParallelism( n, kMax, 1 ); 
 		}		
 		
 		_numEvaluatedPlans++;
@@ -1474,7 +1486,7 @@ public class OptimizerRuleBased extends Optimizer
 	 * @param par
 	 * @throws DMLRuntimeException 
 	 */
-	protected void rAssignRemainingParallelism(OptNode n, int par) 
+	protected void rAssignRemainingParallelism(OptNode n, int parforK, int opsK) 
 		throws DMLRuntimeException
 	{		
 		ArrayList<OptNode> childs = n.getChilds();
@@ -1488,14 +1500,21 @@ public class OptimizerRuleBased extends Optimizer
 				
 				if( c.getNodeType() == NodeType.PARFOR )
 				{
+					//constrain max parfor parallelism by problem size
 					int tmpN = Integer.parseInt(c.getParam(ParamType.NUM_ITERATIONS));
-					int tmpK = (tmpN<par)? tmpN : par;
+					int tmpK = (tmpN<parforK)? tmpN : parforK;
+					
+					//set parfor degree of parallelism
 					long id = c.getID();
 					c.setK(tmpK);
 					ParForProgramBlock pfpb = (ParForProgramBlock) OptTreeConverter
                                                   .getAbstractPlanMapping().getMappedProg(id)[1];
 					pfpb.setDegreeOfParallelism(tmpK);
-					rAssignRemainingParallelism(c,(int)Math.ceil(((double)(par-tmpK+1))/tmpK));
+					
+					//distribute remaining parallelism 
+					int remainParforK = (int)Math.ceil(((double)(parforK-tmpK+1))/tmpK);
+					int remainOpsK = Math.max(opsK / tmpK, 1);
+					rAssignRemainingParallelism(c, remainParforK, remainOpsK);
 				}
 				else if( c.getNodeType() == NodeType.HOP )
 				{
@@ -1505,14 +1524,14 @@ public class OptimizerRuleBased extends Optimizer
 						&& h instanceof MultiThreadedHop ) //abop, datagenop, qop
 					{
 						MultiThreadedHop mhop = (MultiThreadedHop) h;
-						mhop.setMaxNumThreads(par); //set max constraint in hop
-						c.setK(par); //set optnode k (for explain)
+						mhop.setMaxNumThreads(opsK); //set max constraint in hop
+						c.setK(opsK); //set optnode k (for explain)
 						//need to recompile SB, if changed constraint
 						recompileSB = true;	
 					}
 				}
 				else
-					rAssignRemainingParallelism(c, par);
+					rAssignRemainingParallelism(c, parforK, opsK);
 			}
 			
 			//recompile statement block if required
@@ -1844,7 +1863,7 @@ public class OptimizerRuleBased extends Optimizer
 		ArrayList<String> retVars = pfpb.getResultVariables();
 		
 		//compute total sum of pinned result variable memory
-		double sum = computeTotalSizeResultVariables(retVars, vars);
+		double sum = computeTotalSizeResultVariables(retVars, vars, pfpb.getDegreeOfParallelism());
 		
 		//NOTE: currently this rule is too conservative (the result variable is assumed to be dense and
 		//most importantly counted twice if this is part of the maximum operation)
@@ -1866,13 +1885,6 @@ public class OptimizerRuleBased extends Optimizer
 					&& pn.isCPOnly() ) //no forced mr/spark execution  
 			{ 
 				apply = true;
-				
-				//ensure that all result variables are initially empty
-				for( String var : retVars ) {
-					Data dat = vars.get(var);
-					if( dat instanceof MatrixObject )
-						apply &= (((MatrixObject)dat).getNnz() == 0);
-				}	
 			}
 		}
 		
@@ -1930,7 +1942,7 @@ public class OptimizerRuleBased extends Optimizer
 	 * @param vars
 	 * @return
 	 */
-	private double computeTotalSizeResultVariables(ArrayList<String> retVars, LocalVariableMap vars)
+	private double computeTotalSizeResultVariables(ArrayList<String> retVars, LocalVariableMap vars, int k)
 	{
 		double sum = 1;
 		for( String var : retVars ){
@@ -1938,7 +1950,16 @@ public class OptimizerRuleBased extends Optimizer
 			if( dat instanceof MatrixObject )
 			{
 				MatrixObject mo = (MatrixObject)dat;
-				sum += OptimizerUtils.estimateSizeExactSparsity(mo.getNumRows(), mo.getNumColumns(), 1.0);	
+				double nnz = mo.getNnz();
+
+				if(nnz == 0.0) 
+					sum += OptimizerUtils.estimateSizeExactSparsity(mo.getNumRows(), mo.getNumColumns(), 1.0);
+				else {
+					double sp = mo.getSparsity();
+					sum += (k+1) * (OptimizerUtils.estimateSizeExactSparsity(mo.getNumRows(), mo.getNumColumns(),
+							Math.min((1.0/k)+sp, 1.0)));	// Every worker will consume memory for (MatrixSize/k + nnz) data.
+														// This is applicable only when there is non-zerp nnz. 
+				}
 			} 
 		}
 		
@@ -2239,6 +2260,62 @@ public class OptimizerRuleBased extends Optimizer
 				rCollectZipmmPartitioningCandidates(c, cand);
 	}
 	
+	///////
+	//REWRITE set spark eager rdd caching
+	///
+	
+	/**
+	 * 
+	 * @param n
+	 * @throws DMLRuntimeException
+	 * @throws DMLUnsupportedOperationException
+	 */
+	protected void rewriteSetSparkEagerRDDCaching(OptNode n, LocalVariableMap vars) 
+		throws DMLRuntimeException, DMLUnsupportedOperationException 
+	{
+		//get program blocks of root parfor
+		Object[] progobj = OptTreeConverter.getAbstractPlanMapping().getMappedProg(n.getID());
+		ParForStatementBlock pfsb = (ParForStatementBlock)progobj[0];
+		ParForProgramBlock pfpb = (ParForProgramBlock)progobj[1];
+		
+		ArrayList<String> ret = new ArrayList<String>();
+		
+		if(    OptimizerUtils.isSparkExecutionMode() //spark exec mode
+			&& n.getExecType() == ExecType.CP		 //local parfor 
+			&& _N > 1                            )   //at least 2 iterations                             
+		{
+			Set<String> cand = pfsb.variablesRead().getVariableNames();
+			Collection<String> rpVars = pfpb.getSparkRepartitionVariables();
+			for( String var : cand)
+			{
+				Data dat = vars.get(var);
+				
+				if( dat!=null && dat instanceof MatrixObject
+					&& ((MatrixObject)dat).getRDDHandle()!=null )
+				{
+					MatrixObject mo = (MatrixObject)dat;
+					MatrixCharacteristics mc = mo.getMatrixCharacteristics();
+					RDDObject rdd = mo.getRDDHandle();
+					if( (rpVars==null || !rpVars.contains(var)) //not a repartition var
+						&& rdd.rHasCheckpointRDDChilds()        //is cached rdd 
+						&& _lm / n.getK() <                     //is out-of-core dataset
+						OptimizerUtils.estimateSizeExactSparsity(mc))
+					{
+						ret.add(var);
+					}
+				}
+			}
+			
+			//apply rewrite to parfor pb
+			if( !ret.isEmpty() ) {
+				pfpb.setSparkEagerCacheVariables(ret);
+			}
+		}
+		
+		_numEvaluatedPlans++;
+		LOG.debug(getOptMode()+" OPT: rewrite 'set spark eager rdd caching' - result="+ret.size()+
+				" ("+ProgramConverter.serializeStringCollection(ret)+")" );
+	}
 	
 	///////
 	//REWRITE remove compare matrix (for result merge, needs to be invoked before setting result merge)

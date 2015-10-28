@@ -241,8 +241,13 @@ public class RandSPInstruction extends UnarySPInstruction
 	        }
 	        
 	        double sparsity = Double.parseDouble(s[7]);
-			long seed = Long.parseLong(s[8]);
-			String pdf = s[9];
+			
+	        long seed = DataGenOp.UNSPECIFIED_SEED;
+			if (!s[8].contains( Lop.VARIABLE_NAME_PLACEHOLDER)) {
+				seed = Long.parseLong(s[8]);
+			}
+				
+	        String pdf = s[9];
 			String pdfParams = s[10];
 			
 			return new RandSPInstruction(op, method, null, out, rows, cols, rpb, cpb, minValue, maxValue, sparsity, seed, pdf, pdfParams, opcode, str);
@@ -299,10 +304,6 @@ public class RandSPInstruction extends UnarySPInstruction
 	public void processInstruction( ExecutionContext ec )
 		throws DMLRuntimeException
 	{
-		//check valid for integer dimensions (we cannot even represent empty blocks with larger dimensions)
-		if( rows > Integer.MAX_VALUE || cols > Integer.MAX_VALUE )
-			throw new DMLRuntimeException("RandSPInstruction does not support dimensions larger than integer: rows="+rows+", cols="+cols+".");
-		
 		SparkExecutionContext sec = (SparkExecutionContext)ec;
 		
 		//process specific datagen operator
@@ -482,13 +483,13 @@ public class RandSPInstruction extends UnarySPInstruction
 		JavaPairRDD<MatrixIndexes, MatrixCell> miRDD = randomizedRDD
 				.zipWithIndex()
 			  	.filter( new TrimSample(rows) )
-			  	.mapToPair( new Double2MatrixCell(rowsInBlock) );
+			  	.mapToPair( new Double2MatrixCell() );
 		
 		MatrixCharacteristics mcOut = new MatrixCharacteristics(rows, 1, rowsInBlock, colsInBlock, rows);
 		
 		// Construct BinaryBlock representation
 		JavaPairRDD<MatrixIndexes, MatrixBlock> mbRDD = 
-				RDDConverterUtils.binaryCellRDDToBinaryBlockRDD(sec.getSparkContext(), miRDD, mcOut, true);
+				RDDConverterUtils.binaryCellToBinaryBlock(sec.getSparkContext(), miRDD, mcOut, true);
 		
 		MatrixCharacteristics retDims = sec.getMatrixCharacteristics(output.getName());
 		retDims.setNonZeros(rows);
@@ -610,24 +611,13 @@ public class RandSPInstruction extends UnarySPInstruction
 	private static class Double2MatrixCell implements PairFunction<Tuple2<Double, Long>, MatrixIndexes, MatrixCell>
 	{
 		private static final long serialVersionUID = -2125669746624320536L;
-		private int _brlen;
-		
-		public Double2MatrixCell(int brlen) {
-			_brlen = brlen;
-		}
 		
 		@Override
 		public Tuple2<MatrixIndexes, MatrixCell> call(Tuple2<Double, Long> t)
 				throws Exception {
 			long rowID = t._2()+1;
-			
-			long brid = UtilFunctions.blockIndexCalculation(rowID, _brlen);
-			long bcid = 1;
-			int rid = UtilFunctions.cellInBlockCalculation(rowID, _brlen);
-			int cid = 0;
-			
-			MatrixIndexes mi = new MatrixIndexes(brid, bcid);
-			MatrixCell mc = new MatrixCell(rid, cid, t._1());
+			MatrixIndexes mi = new MatrixIndexes(rowID, 1);
+			MatrixCell mc = new MatrixCell(t._1());
 			
 			return new Tuple2<MatrixIndexes, MatrixCell>(mi, mc);
 		}

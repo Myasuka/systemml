@@ -23,6 +23,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.HashMap;
 import java.util.Map;
+
 import org.antlr.v4.runtime.ANTLRInputStream;
 import org.antlr.v4.runtime.BailErrorStrategy;
 import org.antlr.v4.runtime.CommonTokenStream;
@@ -35,6 +36,7 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
 import com.ibm.bi.dml.api.DMLScript;
+import com.ibm.bi.dml.parser.AParserWrapper;
 import com.ibm.bi.dml.parser.DMLProgram;
 import com.ibm.bi.dml.parser.ForStatement;
 import com.ibm.bi.dml.parser.ForStatementBlock;
@@ -62,12 +64,8 @@ import com.ibm.bi.dml.parser.python.PydmlSyntacticErrorListener.CustomDmlErrorLi
  * Note: ExpressionInfo and StatementInfo are simply wrapper objects and are reused in both DML and PyDML parsers.
  *
  */
-public class PyDMLParserWrapper {
-	@SuppressWarnings("unused")
-	private static final String _COPYRIGHT = "Licensed Materials - Property of IBM\n(C) Copyright IBM Corp. 2010, 2015\n" +
-			"US Government Users Restricted Rights - Use, duplication  disclosure restricted by GSA ADP Schedule Contract with IBM Corp.";
-
-
+public class PyDMLParserWrapper extends AParserWrapper
+{
 	private static final Log LOG = LogFactory.getLog(DMLScript.class.getName());
 
 	/**
@@ -109,10 +107,11 @@ public class PyDMLParserWrapper {
 	 * @return
 	 * @throws ParseException
 	 */
+	@Override
 	public DMLProgram parse(String fileName, String dmlScript, HashMap<String,String> argVals) throws ParseException {
 		DMLProgram prog = null;
 		
-		if(dmlScript == null || dmlScript.trim().compareTo("") == 0) {
+		if(dmlScript == null || dmlScript.trim().isEmpty()) {
 			throw new ParseException("Incorrect usage of parse. Please pass dmlScript not just filename");
 		}
 		

@@ -14,33 +14,40 @@
  * limitations under the License.
  * 
  */
+
 package com.ibm.bi.dml.runtime.instructions.spark.functions;
 
-import org.apache.spark.Accumulator;
 import org.apache.spark.api.java.function.Function;
 
+import scala.Tuple2;
+
 import com.ibm.bi.dml.runtime.matrix.data.MatrixBlock;
+import com.ibm.bi.dml.runtime.matrix.data.MatrixIndexes;
 
 /**
- * 
+ * Function class that finds the index of last cell in the given matrix block.
  */
-public class ComputeNonZerosBlockFunction implements Function<MatrixBlock,MatrixBlock> 
-{
-	private static final long serialVersionUID = 966409324406154236L;
+public class LastCellInMatrixBlock implements Function<Tuple2<MatrixIndexes, MatrixBlock>, MatrixIndexes> {
 
-	private Accumulator<Double> _aNnz = null;
+	private static final long serialVersionUID = -4930522353195801521L;
+
+	int _rpb, _cpb;
 	
-	public ComputeNonZerosBlockFunction(Accumulator<Double> aNnz) {
-		_aNnz = aNnz;
+	public LastCellInMatrixBlock(int rpb, int cpb) {
+		_rpb = rpb;
+		_cpb = cpb;
 	}
-
+	
 	@Override
-	public MatrixBlock call(MatrixBlock arg0)
-		throws Exception 
-	{
-		//aggregate non-zeros (w/o recompute since maintained by every operation)
-		_aNnz.add( (double)arg0.getNonZeros() ); 
+	public MatrixIndexes call(Tuple2<MatrixIndexes, MatrixBlock> v1)
+			throws Exception {
 		
-		return arg0;
+		// Find the indices of last cell in the block
+		long r = _rpb * (v1._1().getRowIndex()-1) + v1._2().getNumRows();
+		long c = _cpb * (v1._1().getColumnIndex()-1) + v1._2().getNumColumns();
+		
+		return new MatrixIndexes(r, c);
 	}
+	
 }
+

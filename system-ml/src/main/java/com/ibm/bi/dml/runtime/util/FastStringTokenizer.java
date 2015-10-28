@@ -17,6 +17,7 @@
 
 package com.ibm.bi.dml.runtime.util;
 
+import java.io.Serializable;
 import java.util.NoSuchElementException;
 
 /**
@@ -25,12 +26,9 @@ import java.util.NoSuchElementException;
  * the simplifying assumptions of (1) no returns delimiter, and (2) single character delimiter.
  * 
  */
-public class FastStringTokenizer
+public class FastStringTokenizer implements Serializable
 {
-	@SuppressWarnings("unused")
-	private static final String _COPYRIGHT = "Licensed Materials - Property of IBM\n(C) Copyright IBM Corp. 2010, 2015\n" +
-	                                         "US Government Users Restricted Rights - Use, duplication  disclosure restricted by GSA ADP Schedule Contract with IBM Corp.";
-	
+	private static final long serialVersionUID = 4051436015710778611L;
 	private String _string = null;
     private char   _del    = 0;
     private int    _pos    = -1;

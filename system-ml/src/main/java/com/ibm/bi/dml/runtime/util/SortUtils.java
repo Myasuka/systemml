@@ -17,6 +17,7 @@
 
 package com.ibm.bi.dml.runtime.util;
 
+import java.util.Arrays;
 import java.util.Random;
 
 import com.ibm.bi.dml.runtime.controlprogram.parfor.stat.Timing;
@@ -27,10 +28,6 @@ import com.ibm.bi.dml.runtime.controlprogram.parfor.stat.Timing;
  */
 public class SortUtils 
 {
-	@SuppressWarnings("unused")
-	private static final String _COPYRIGHT = "Licensed Materials - Property of IBM\n(C) Copyright IBM Corp. 2010, 2013\n" +
-	                                         "US Government Users Restricted Rights - Use, duplication  disclosure restricted by GSA ADP Schedule Contract with IBM Corp.";
-		
 	/**
 	 * 
 	 * @param start
@@ -43,6 +40,25 @@ public class SortUtils
 		boolean ret = true;
 		for( int i=start+1; i<end; i++ )
     		if( indexes[i]<indexes[i-1] ){
+    			ret = false;
+    			break;
+    		}
+		return ret;
+	}
+	
+	/**
+	 * 
+	 * @param iStart
+	 * @param iEnd
+	 * @param dVals
+	 * 
+	 * @return true/false, if its sorted or not.
+	 */
+	public static boolean isSorted(int iStart, int iEnd, double[] dVals)
+	{
+		boolean ret = true;
+		for( int i=iStart+1; i<iEnd; i++ )
+    		if( dVals[i]<dVals[i-1] ){
     			ret = false;
     			break;
     		}
@@ -157,6 +173,7 @@ public class SortUtils
         }
     }
     
+
     /**
      * 
      * @param start
@@ -263,6 +280,39 @@ public class SortUtils
         }
     }
     
+    
+    
+	/**
+	 * In-place sort of two arrays, only indexes is used for comparison and values
+	 * of same position are sorted accordingly. 
+	 * 
+     * @param start
+     * @param end
+     * @param indexes
+     * @param values
+     */
+    public static void sortByValueStable(int start, int end, double[] values, int[] indexes) 
+    {    
+
+    	sortByValue(start, end, values, indexes);
+    	
+    	// Maintain the stability of the index order.
+		for( int i=0; i<values.length-1; i++ ) {
+			double tmp = values[i];
+			//determine run of equal values
+			int len = 0;
+			while( i+len+1<values.length && tmp==values[i+len+1] )
+				len++;
+			//unstable sort of run indexes (equal value guaranteed)
+			if( len>0 ) {
+				Arrays.sort(indexes, i, i+len+1);
+				i += len; //skip processed run
+			}
+		}
+    }
+
+      
+    
     /**
      * 
      * @param array
@@ -293,7 +343,7 @@ public class SortUtils
                 : a));
     }
     
-    
+
     public static void main(String[] args)
     {
     	int n = 10000000;

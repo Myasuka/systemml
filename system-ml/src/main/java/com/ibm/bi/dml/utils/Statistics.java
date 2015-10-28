@@ -42,11 +42,14 @@ import com.ibm.bi.dml.runtime.instructions.spark.SPInstruction;
  * This class captures all statistics.
  */
 public class Statistics 
-{
+{	
+	private static long compileStartTime = 0;
+	private static long compileEndTime = 0;
+	public static long compileTime = 0;
 	
-	private static long lStartTime = 0;
-	private static long lEndTime = 0;
-	public static long execTime=0;
+	private static long execStartTime = 0;
+	private static long execEndTime = 0;
+	public static long execTime = 0;
 
 	// number of compiled/executed MR jobs
 	private static int iNoOfExecutedMRJobs = 0;
@@ -66,6 +69,10 @@ public class Statistics
 	private static AtomicLong hopRecompilePred = new AtomicLong(0); //count
 	private static AtomicLong hopRecompileSB = new AtomicLong(0);   //count
 
+	//Function recompile stats 
+	private static AtomicLong funRecompileTime = new AtomicLong(0); //in nano sec
+	private static AtomicLong funRecompiles = new AtomicLong(0); //count
+	
 	//Spark-specific stats
 	private static long sparkCtxCreateTime = 0; 
 
@@ -208,6 +215,16 @@ public class Statistics
 		hopRecompileSB.addAndGet(delta);
 	}
 
+	public static void incrementFunRecompileTime( long delta ) {
+		//note: not synchronized due to use of atomics
+		funRecompileTime.addAndGet(delta);
+	}
+	
+	public static void incrementFunRecompiles() {
+		//note: not synchronized due to use of atomics
+		funRecompiles.incrementAndGet();
+	}
+	
 	public static synchronized void incrementParForOptimCount(){
 		parforOptCount ++;
 	}
@@ -223,13 +240,27 @@ public class Statistics
 	public static synchronized void incrementParForMergeTime( long time ) {
 		parforMergeTime += time;
 	}
+
+	public static void startCompileTimer() {
+		if( DMLScript.STATISTICS )
+			compileStartTime = System.nanoTime();
+	}
+
+	public static void stopCompileTimer() {
+		if( DMLScript.STATISTICS )
+			compileEndTime = System.nanoTime();
+	}
+
+	public static long getCompileTime() {
+		return compileEndTime - compileStartTime;
+	}
 	
 	/**
 	 * Starts the timer, should be invoked immediately before invoking
 	 * Program.execute()
 	 */
 	public static void startRunTimer() {
-		lStartTime = System.nanoTime();
+		execStartTime = System.nanoTime();
 	}
 
 	/**
@@ -237,7 +268,7 @@ public class Statistics
 	 * Program.execute()
 	 */
 	public static void stopRunTimer() {
-		lEndTime = System.nanoTime();
+		execEndTime = System.nanoTime();
 	}
 
 	/**
@@ -246,7 +277,7 @@ public class Statistics
 	 * @return
 	 */
 	public static long getRunTime() {
-		return lEndTime - lStartTime;
+		return execEndTime - execStartTime;
 	}
 	
 	public static void reset()
@@ -434,6 +465,14 @@ public class Statistics
 		return hopRecompileSB.get();
 	}
 	
+	public static long getFunRecompileTime(){
+		return funRecompileTime.get();
+	}
+	
+	public static long getFunRecompiles(){
+		return funRecompiles.get();
+	}
+		
 	public static long getParforOptCount(){
 		return parforOptCount;
 	}
@@ -460,8 +499,11 @@ public class Statistics
 		StringBuilder sb = new StringBuilder();
 		
 		sb.append("SystemML Statistics:\n");
-		double totalT = getRunTime()*1e-9; // nanoSec --> sec
-		sb.append("Total execution time:\t\t" + String.format("%.3f", totalT) + " sec.\n");
+		if( DMLScript.STATISTICS ) {
+			sb.append("Total elapsed time:\t\t" + String.format("%.3f", (getCompileTime()+getRunTime())*1e-9) + " sec.\n"); // nanoSec --> sec
+			sb.append("Total compilation time:\t\t" + String.format("%.3f", getCompileTime()*1e-9) + " sec.\n"); // nanoSec --> sec
+		}
+		sb.append("Total execution time:\t\t" + String.format("%.3f", getRunTime()*1e-9) + " sec.\n"); // nanoSec --> sec
 		if( OptimizerUtils.isSparkExecutionMode() ) {
 			if( DMLScript.STATISTICS ) //moved into stats on Shiv's request
 				sb.append("Number of compiled Spark inst:\t" + getNoOfCompiledSPInst() + ".\n");
@@ -481,6 +523,10 @@ public class Statistics
 			sb.append("Cache times (ACQr/m, RLS, EXP):\t" + CacheStatistics.displayTime() + " sec.\n");
 			sb.append("HOP DAGs recompiled (PRED, SB):\t" + getHopRecompiledPredDAGs() + "/" + getHopRecompiledSBDAGs() + ".\n");
 			sb.append("HOP DAGs recompile time:\t" + String.format("%.3f", ((double)getHopRecompileTime())/1000000000) + " sec.\n");
+			if( getFunRecompiles()>0 ) {
+				sb.append("Functions recompiled:\t\t" + getFunRecompiles() + ".\n");
+				sb.append("Functions recompile time:\t" + String.format("%.3f", ((double)getFunRecompileTime())/1000000000) + " sec.\n");	
+			}
 			if( OptimizerUtils.isSparkExecutionMode() ){
 				String lazy = SparkExecutionContext.isLazySparkContextCreation() ? "(lazy)" : "(eager)";
 				sb.append("Spark ctx create time "+lazy+":\t"+

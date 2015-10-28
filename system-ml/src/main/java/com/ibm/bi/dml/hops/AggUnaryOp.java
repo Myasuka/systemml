@@ -19,6 +19,7 @@ package com.ibm.bi.dml.hops;
 
 import com.ibm.bi.dml.hops.AggBinaryOp.SparkAggType;
 import com.ibm.bi.dml.hops.Hop.MultiThreadedHop;
+import com.ibm.bi.dml.hops.rewrite.HopRewriteUtils;
 import com.ibm.bi.dml.lops.Aggregate;
 import com.ibm.bi.dml.lops.Aggregate.OperationTypes;
 import com.ibm.bi.dml.lops.Binary;
@@ -33,6 +34,7 @@ import com.ibm.bi.dml.lops.UnaryCP;
 import com.ibm.bi.dml.lops.LopProperties.ExecType;
 import com.ibm.bi.dml.parser.Expression.DataType;
 import com.ibm.bi.dml.parser.Expression.ValueType;
+import com.ibm.bi.dml.runtime.controlprogram.context.SparkExecutionContext;
 import com.ibm.bi.dml.runtime.matrix.MatrixCharacteristics;
 
 
@@ -116,7 +118,27 @@ public class AggUnaryOp extends Hop implements MultiThreadedHop
 				if( isTernaryAggregateRewriteApplicable() ) {
 					agg1 = constructLopsTernaryAggregateRewrite(et);
 				}
-				else { //general case
+				else if( isUnaryAggregateOuterCPRewriteApplicable() )
+				{
+					OperationTypes op = HopsAgg2Lops.get(_op);
+					DirectionTypes dir = HopsDirection2Lops.get(_direction);
+
+					BinaryOp binput = (BinaryOp)getInput().get(0);
+					agg1 = new UAggOuterChain( binput.getInput().get(0).constructLops(), 
+							binput.getInput().get(1).constructLops(), op, dir, 
+							HopsOpOp2LopsB.get(binput.getOp()), DataType.MATRIX, getValueType(), ExecType.CP);
+					PartialAggregate.setDimensionsBasedOnDirection(agg1, getDim1(), getDim2(), input.getRowsInBlock(), input.getColsInBlock(), dir);
+				
+					if (getDataType() == DataType.SCALAR) {
+						UnaryCP unary1 = new UnaryCP(agg1, HopsOpOp1LopsUS.get(OpOp1.CAST_AS_SCALAR),
+								                    getDataType(), getValueType());
+						unary1.getOutputParameters().setDimensions(0, 0, 0, 0, -1);
+						setLineNumbers(unary1);
+						setLops(unary1);
+					}
+				
+				}				
+				else { //general case		
 					int k = OptimizerUtils.getConstrainedNumThreads(_maxNumThreads);
 					agg1 = new PartialAggregate(input.constructLops(), 
 							HopsAgg2Lops.get(_op), HopsDirection2Lops.get(_direction), getDataType(),getValueType(), et, k);
@@ -224,13 +246,7 @@ public class AggUnaryOp extends Hop implements MultiThreadedHop
 					setLops(transform1);
 				
 					if (getDataType() == DataType.SCALAR) {
-						boolean needAgg = requiresAggregation(input, _direction);
-						SparkAggType aggtype = getSparkUnaryAggregationType(needAgg);
-
-						PartialAggregate aggregate = new PartialAggregate(input.constructLops(), 
-								HopsAgg2Lops.get(_op), HopsDirection2Lops.get(_direction), DataType.MATRIX, getValueType(), aggtype, et);
-						
-						UnaryCP unary1 = new UnaryCP(aggregate, HopsOpOp1LopsUS.get(OpOp1.CAST_AS_SCALAR),
+						UnaryCP unary1 = new UnaryCP(transform1, HopsOpOp1LopsUS.get(OpOp1.CAST_AS_SCALAR),
 								                    getDataType(), getValueType());
 						unary1.getOutputParameters().setDimensions(0, 0, 0, 0, -1);
 						setLineNumbers(unary1);
@@ -340,8 +356,12 @@ public class AggUnaryOp extends Hop implements MultiThreadedHop
 				break;
 			case MAXINDEX:
 			case MININDEX:
-				//worst-case correction LASTCOLUMN 
-				val = OptimizerUtils.estimateSizeExactSparsity(dim1, 1, 1.0);
+				Hop hop = getInput().get(0);
+				if(isUnaryAggregateOuterCPRewriteApplicable())
+					val = 3 * OptimizerUtils.estimateSizeExactSparsity(1, hop._dim2, 1.0);
+				else
+					//worst-case correction LASTCOLUMN 
+					val = OptimizerUtils.estimateSizeExactSparsity(dim1, 1, 1.0);
 				break;
 			default:
 				//no intermediate memory consumption
@@ -374,6 +394,7 @@ public class AggUnaryOp extends Hop implements MultiThreadedHop
 		
 		ExecType REMOTE = OptimizerUtils.isSparkExecutionMode() ? ExecType.SPARK : ExecType.MR;
 		
+		//forced / memory-based / threshold-based decision
 		if( _etypeForced != null ) 			
 		{
 			_etype = _etypeForced;
@@ -398,6 +419,17 @@ public class AggUnaryOp extends Hop implements MultiThreadedHop
 			checkAndSetInvalidCPDimsAndSize();
 		}
 
+		//spark-specific decision refinement (execute unary aggregate w/ spark input and 
+		//single parent also in spark because it's likely cheap and reduces data transfer)
+		if( _etype == ExecType.CP && _etypeForced != ExecType.CP
+			&& !(getInput().get(0) instanceof DataOp)  //input is not checkpoint
+			&& getInput().get(0).getParent().size()==1 //uagg is only parent
+			&& getInput().get(0).optFindExecType() == ExecType.SPARK )					
+		{
+			//pull unary aggregate into spark 
+			_etype = ExecType.SPARK;
+		}
+		
 		//mark for recompile (forever)
 		if( OptimizerUtils.ALLOW_DYN_RECOMPILATION && !dimsKnown(true) && _etype==REMOTE ) {
 			setRequiresRecompile();
@@ -456,28 +488,41 @@ public class AggUnaryOp extends Hop implements MultiThreadedHop
 			&& _op == AggOp.SUM ) 
 		{
 			Hop input1 = getInput().get(0);
-			if( input1 instanceof BinaryOp && ((BinaryOp)input1).getOp()==OpOp2.MULT 
-				&& input1.getDataType()==DataType.MATRIX&& input1.getDim2()==1 ) //all column vectors
+			if( input1 instanceof BinaryOp && ((BinaryOp)input1).getOp()==OpOp2.MULT )
 			{
 				Hop input11 = input1.getInput().get(0);
 				Hop input12 = input1.getInput().get(1);
 				
 				if( input11 instanceof BinaryOp && ((BinaryOp)input11).getOp()==OpOp2.MULT )
 				{
-					ret = (input11.getInput().get(0).getDim1()==input1.getDim1() 
-						&& input11.getInput().get(1).getDim1()==input1.getDim1()
-						&& input12.getDim1()==input1.getDim1());
+					//ternary, arbitrary matrices but no mv/outer operations.
+					ret = HopRewriteUtils.isEqualSize(input11.getInput().get(0), input1)
+						&& HopRewriteUtils.isEqualSize(input11.getInput().get(1), input1)	
+						&& HopRewriteUtils.isEqualSize(input12, input1);
 				}
 				else if( input12 instanceof BinaryOp && ((BinaryOp)input12).getOp()==OpOp2.MULT )
 				{
-					ret = (input12.getInput().get(0).getDim1()==input1.getDim1() 
-							&& input12.getInput().get(1).getDim1()==input1.getDim1()
-							&& input11.getDim1()==input1.getDim1());
+					//ternary, arbitrary matrices but no mv/outer operations.
+					ret = HopRewriteUtils.isEqualSize(input12.getInput().get(0), input1)
+							&& HopRewriteUtils.isEqualSize(input12.getInput().get(1), input1)	
+							&& HopRewriteUtils.isEqualSize(input11, input1);
+				}
+				else
+				{
+					//binary, arbitrary matrices but no mv/outer operations.
+					ret = HopRewriteUtils.isEqualSize(input11, input12);
 				}
 			}
 		}
 		
 		return ret;
+	}
+	
+	private static boolean isCompareOperator(OpOp2 opOp2)
+	{
+		return (opOp2 == OpOp2.LESS || opOp2 == OpOp2.LESSEQUAL 
+			|| opOp2 == OpOp2.GREATER || opOp2 == OpOp2.GREATEREQUAL
+			|| opOp2 == OpOp2.EQUAL || opOp2 == OpOp2.NOTEQUAL);
 	}
 	
 	/**
@@ -493,9 +538,15 @@ public class AggUnaryOp extends Hop implements MultiThreadedHop
 		{
 			//for special cases, we need to hold the broadcast twice in order to allow for
 			//an efficient binary search over a plain java array
-			double factor = (((BinaryOp)input).getOp()==OpOp2.LESS 
-					&& _direction == Direction.Row && _op == AggOp.SUM) ? 2.0 : 1.0;
+			double factor = (isCompareOperator(((BinaryOp)input).getOp())
+					&& (_direction == Direction.Row || _direction == Direction.Col || _direction == Direction.RowCol)
+					&& (_op == AggOp.SUM)) ? 2.0 : 1.0;
 			
+			factor += (isCompareOperator(((BinaryOp)input).getOp())
+					&& (_direction == Direction.Row || _direction == Direction.Col)
+					&& (_op == AggOp.MAXINDEX || _op == AggOp.MININDEX))
+					? 1.0 : 0.0;
+
 			//note: memory constraint only needs to take the rhs into account because the output
 			//is guaranteed to be an aggregate of <=16KB
 			Hop right = input.getInput().get(1);
@@ -533,13 +584,48 @@ public class AggUnaryOp extends Hop implements MultiThreadedHop
 					OptimizerUtils.estimateSize(right.getDim1(), right.getDim2()) : //dims known and estimate fits
 					right.getOutputMemEstimate();                      //dims unknown but worst-case estimate fits
 			
-			if( OptimizerUtils.checkSparkBroadcastMemoryBudget(size) ) {
-				ret = true;
+			if(_op == AggOp.MAXINDEX || _op == AggOp.MININDEX){
+				double memBudgetExec = SparkExecutionContext.getBroadcastMemoryBudget();
+				double memBudgetLocal = OptimizerUtils.getLocalMemBudget();
+
+				//basic requirement: the broadcast needs to to fit twice in the remote broadcast memory 
+				//and local memory budget because we have to create a partitioned broadcast
+				//memory and hand it over to the spark context as in-memory object
+				ret = ( 2*size < memBudgetExec && 2*size < memBudgetLocal );
+			
+			} else {
+				if( OptimizerUtils.checkSparkBroadcastMemoryBudget(size) ) {
+					ret = true;
+				}
 			}
+				
 		}
 		
 		return ret;
 	}
+	
+	
+	
+	/**
+	 * This will check if this is one of the operator from supported LibMatrixOuterAgg library.
+	 * It needs to be Outer, aggregator type SUM, RowIndexMin, RowIndexMax and 6 operators <, <=, >, >=, == and !=
+	 *   
+	 *   
+	 * @return
+	 */
+	private boolean isUnaryAggregateOuterCPRewriteApplicable() 
+	{
+		boolean ret = false;
+		Hop input = getInput().get(0);
+		
+		if(( input instanceof BinaryOp && ((BinaryOp)input).isOuterVectorOperator() )
+			&& (_op == AggOp.MAXINDEX || _op == AggOp.MININDEX || _op == AggOp.SUM)
+			&& (isCompareOperator(((BinaryOp)input).getOp())))
+			ret = true;
+
+		return ret;
+	}
+	
 	
 	/**
 	 * 
@@ -571,9 +657,11 @@ public class AggUnaryOp extends Hop implements MultiThreadedHop
 			in2 = input12.getInput().get(0).constructLops();
 			in3 = input12.getInput().get(1).constructLops();
 		}
-		else 
+		else
 		{
-			throw new HopsException("Failed to apply ternary-aggregate hop-lop rewrite - missing binaryop.");
+			in1 = input11.constructLops();
+			in2 = input12.constructLops();
+			in3 = new LiteralOp("1",1).constructLops();
 		}
 
 		//create new ternary aggregate operator 

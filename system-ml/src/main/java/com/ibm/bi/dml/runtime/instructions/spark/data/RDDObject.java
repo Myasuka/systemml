@@ -65,12 +65,15 @@ public class RDDObject extends LineageObject
 	
 
 	/**
+	 * Indicates if rdd is an hdfs file or a checkpoint over an hdfs file;
+	 * in both cases, we can directly read the file instead of collecting
+	 * the given rdd.
 	 * 
 	 * @return
 	 */
 	public boolean allowsShortCircuitRead()
 	{
-		boolean ret = false;
+		boolean ret = isHDFSFile();
 		
 		if( isCheckpointRDD() && getLineageChilds().size() == 1 ) {
 			LineageObject lo = getLineageChilds().get(0);
@@ -88,5 +91,25 @@ public class RDDObject extends LineageObject
 	{
 		return ( isCheckpointRDD() && getLineageChilds().size() == 1
 			     && getLineageChilds().get(0) instanceof RDDObject );
+	}
+	
+	/**
+	 * 
+	 * @return
+	 */
+	public boolean rHasCheckpointRDDChilds()
+	{
+		//probe for checkpoint rdd
+		if( _checkpointed )
+			return true;
+		
+		//process childs recursively
+		boolean ret = false;
+		for( LineageObject lo : getLineageChilds() ) {
+			if( lo instanceof RDDObject )
+				ret |= ((RDDObject)lo).rHasCheckpointRDDChilds();
+		}
+		
+		return ret;
 	}
 }

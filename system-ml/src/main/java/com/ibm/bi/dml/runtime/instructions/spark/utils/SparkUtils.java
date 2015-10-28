@@ -24,19 +24,28 @@ import java.util.List;
 
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.api.java.function.Function;
+import org.apache.spark.api.java.function.Function2;
+import org.apache.spark.storage.StorageLevel;
 
 import scala.Tuple2;
 
+import com.ibm.bi.dml.lops.Checkpoint;
 import com.ibm.bi.dml.runtime.DMLRuntimeException;
 import com.ibm.bi.dml.runtime.DMLUnsupportedOperationException;
+import com.ibm.bi.dml.runtime.instructions.spark.functions.CopyBinaryCellFunction;
+import com.ibm.bi.dml.runtime.instructions.spark.functions.CopyBlockFunction;
 import com.ibm.bi.dml.runtime.matrix.MatrixCharacteristics;
 import com.ibm.bi.dml.runtime.matrix.data.MatrixBlock;
+import com.ibm.bi.dml.runtime.matrix.data.MatrixCell;
 import com.ibm.bi.dml.runtime.matrix.data.MatrixIndexes;
 import com.ibm.bi.dml.runtime.matrix.mapred.IndexedMatrixValue;
 import com.ibm.bi.dml.runtime.util.UtilFunctions;
 
-public class SparkUtils {
-	
+public class SparkUtils 
+{	
+	//internal configuration
+	public static final StorageLevel DEFAULT_TMP = Checkpoint.DEFAULT_STORAGE_LEVEL;
 	
 	/**
 	 * 
@@ -258,4 +267,182 @@ public class SparkUtils {
 		return sc.parallelizePairs(list);
 	}
 	
+	/**
+	 * 
+	 * @param input
+	 * @return
+	 */
+	public static JavaPairRDD<MatrixIndexes, MatrixCell> cacheBinaryCellRDD(JavaPairRDD<MatrixIndexes, MatrixCell> input)
+	{
+		JavaPairRDD<MatrixIndexes, MatrixCell> ret = null;
+		
+		if( !input.getStorageLevel().equals(DEFAULT_TMP) ) {
+			ret = input.mapToPair(new CopyBinaryCellFunction())
+					   .persist(DEFAULT_TMP);
+		}
+		
+		return ret;
+	}
+	
+	/**
+	 * 
+	 * @param input
+	 * @return
+	 */
+	public static JavaPairRDD<MatrixIndexes, MatrixBlock> cacheBinaryBlockRDD(JavaPairRDD<MatrixIndexes, MatrixBlock> input)
+	{
+		JavaPairRDD<MatrixIndexes, MatrixBlock> ret = null;
+		
+		if( !input.getStorageLevel().equals(DEFAULT_TMP) ) {
+			ret = input.mapValues(new CopyBlockFunction(false))
+					   .persist(DEFAULT_TMP);
+		}
+		
+		return ret;
+	}
+	
+	/**
+	 * Utility to compute dimensions and non-zeros in a given RDD of binary cells.
+	 * 
+	 * @param rdd
+	 * @param computeNNZ
+	 * @return
+	 */
+	public static MatrixCharacteristics computeMatrixCharacteristics(JavaPairRDD<MatrixIndexes, MatrixCell> input) 
+	{
+		// compute dimensions and nnz in single pass
+		MatrixCharacteristics ret = input
+				.map(new AnalyzeCellMatrixCharacteristics())
+				.reduce(new AggregateMatrixCharacteristics());
+		
+		return ret;
+	}
+	
+	/**
+	 * Utility to compute dimensions and non-zeros in the given RDD of matrix blocks.
+	 * 
+	 * @param rdd
+	 * @param rpb
+	 * @param cpb
+	 * @param computeNNZ
+	 * @return
+	 */
+	public static MatrixCharacteristics computeMatrixCharacteristics(JavaPairRDD<MatrixIndexes, MatrixBlock> input, int brlen, int bclen) 
+	{
+		// compute dimensions and nnz in single pass
+		MatrixCharacteristics ret = input
+				.map(new AnalyzeBlockMatrixCharacteristics(brlen, bclen))
+				.reduce(new AggregateMatrixCharacteristics());
+		
+		return ret;
+	}
+	
+	/**
+	 * 
+	 */
+	private static class AnalyzeCellMatrixCharacteristics implements Function<Tuple2<MatrixIndexes,MatrixCell>, MatrixCharacteristics> 
+	{
+		private static final long serialVersionUID = 8899395272683723008L;
+
+		@Override
+		public MatrixCharacteristics call(Tuple2<MatrixIndexes, MatrixCell> arg0) 
+			throws Exception 
+		{
+			long rix = arg0._1().getRowIndex();
+			long cix = arg0._1().getColumnIndex();
+			long nnz = (arg0._2().getValue()!=0) ? 1 : 0;
+			return new MatrixCharacteristics(rix, cix, 0, 0, nnz);
+		}
+	}
+	
+	/**
+	 * 
+	 */
+	private static class AnalyzeBlockMatrixCharacteristics implements Function<Tuple2<MatrixIndexes,MatrixBlock>, MatrixCharacteristics> 
+	{
+		private static final long serialVersionUID = -1857049501217936951L;
+		
+		private int _brlen = -1; 
+		private int _bclen = -1; 
+		
+		public AnalyzeBlockMatrixCharacteristics(int brlen, int bclen) {
+			_brlen = brlen;
+			_bclen = bclen;
+		}
+		
+		@Override
+		public MatrixCharacteristics call(Tuple2<MatrixIndexes, MatrixBlock> arg0) 
+			throws Exception 
+		{
+			MatrixBlock block = arg0._2();
+			long rlen = (arg0._1().getRowIndex()-1)*_brlen + block.getNumRows();
+			long clen = (arg0._1().getColumnIndex()-1)*_bclen + block.getNumColumns();
+			long nnz = block.getNonZeros();
+			return new MatrixCharacteristics(rlen, clen, _brlen, _bclen, nnz);
+		}
+	}
+	
+	/**
+	 * 
+	 */
+	private static class AggregateMatrixCharacteristics implements Function2<MatrixCharacteristics, MatrixCharacteristics, MatrixCharacteristics> 
+	{
+		private static final long serialVersionUID = 4263886749699779994L;
+
+		@Override
+		public MatrixCharacteristics call(MatrixCharacteristics arg0, MatrixCharacteristics arg1) 
+			throws Exception 
+		{
+			return new MatrixCharacteristics(
+					Math.max(arg0.getRows(), arg1.getRows()),  //max
+					Math.max(arg0.getCols(), arg1.getCols()),  //max
+					arg0.getRowsPerBlock(), 
+					arg0.getColsPerBlock(),
+					arg0.getNonZeros() + arg1.getNonZeros() ); //sum
+		}	
+	}
+	
+	////////////////////////////
+	//TODO MB: to be cleaned up but still used
+	
+	/**
+	 * Utility to compute number of non-zeros from the given RDD of MatrixCells
+	 * @param rdd
+	 * @return
+	 */
+	public static long computeNNZFromCells(JavaPairRDD<MatrixIndexes, MatrixCell> rdd) {
+		long nnz = rdd.values().filter(
+						new Function<MatrixCell,Boolean>() {
+							private static final long serialVersionUID = -6550193680630537857L;
+							@Override
+							public Boolean call(MatrixCell v1) throws Exception {
+								return (v1.getValue() != 0);
+							}
+						}).count();
+		return nnz;
+	}
+	
+	/**
+	 * Utility to compute number of non-zeros from the given RDD of MatrixBlocks
+	 * @param rdd
+	 * @return
+	 */
+	public static long computeNNZFromBlocks(JavaPairRDD<MatrixIndexes, MatrixBlock> rdd) {
+		long nnz = rdd.values().aggregate(	0L, 
+						new Function2<Long,MatrixBlock,Long>() {
+							private static final long serialVersionUID = 4907645080949985267L;
+							@Override
+							public Long call(Long v1, MatrixBlock v2) throws Exception {
+								return (v1 + v2.getNonZeros());
+							} 
+						}, 
+						new Function2<Long,Long,Long>() {
+							private static final long serialVersionUID = 333028431986883739L;
+							@Override
+							public Long call(Long v1, Long v2) throws Exception {
+								return v1+v2;
+							}
+						} );
+		return nnz;
+	}
 }

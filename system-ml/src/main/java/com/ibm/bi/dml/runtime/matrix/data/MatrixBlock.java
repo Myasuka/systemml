@@ -41,8 +41,6 @@ import com.ibm.bi.dml.hops.OptimizerUtils;
 import com.ibm.bi.dml.lops.MMTSJ.MMTSJType;
 import com.ibm.bi.dml.lops.MapMultChain.ChainType;
 import com.ibm.bi.dml.lops.PartialAggregate.CorrectionLocationType;
-import com.ibm.bi.dml.lops.WeightedDivMM.WDivMMType;
-import com.ibm.bi.dml.lops.WeightedSquaredLoss.WeightsType;
 import com.ibm.bi.dml.parser.DMLTranslator;
 import com.ibm.bi.dml.runtime.DMLRuntimeException;
 import com.ibm.bi.dml.runtime.DMLUnsupportedOperationException;
@@ -55,12 +53,15 @@ import com.ibm.bi.dml.runtime.functionobjects.KahanPlus;
 import com.ibm.bi.dml.runtime.functionobjects.Multiply;
 import com.ibm.bi.dml.runtime.functionobjects.Plus;
 import com.ibm.bi.dml.runtime.functionobjects.ReduceAll;
+import com.ibm.bi.dml.runtime.functionobjects.ReduceCol;
+import com.ibm.bi.dml.runtime.functionobjects.ReduceRow;
 import com.ibm.bi.dml.runtime.functionobjects.SortIndex;
 import com.ibm.bi.dml.runtime.functionobjects.SwapIndex;
 import com.ibm.bi.dml.runtime.instructions.cp.CM_COV_Object;
 import com.ibm.bi.dml.runtime.instructions.cp.DoubleObject;
 import com.ibm.bi.dml.runtime.instructions.cp.KahanObject;
 import com.ibm.bi.dml.runtime.instructions.cp.ScalarObject;
+import com.ibm.bi.dml.runtime.matrix.MatrixCharacteristics;
 import com.ibm.bi.dml.runtime.matrix.data.LibMatrixBincell.BinaryAccessType;
 import com.ibm.bi.dml.runtime.matrix.mapred.IndexedMatrixValue;
 import com.ibm.bi.dml.runtime.matrix.mapred.MRJobConfiguration;
@@ -75,6 +76,7 @@ import com.ibm.bi.dml.runtime.matrix.operators.QuaternaryOperator;
 import com.ibm.bi.dml.runtime.matrix.operators.ReorgOperator;
 import com.ibm.bi.dml.runtime.matrix.operators.ScalarOperator;
 import com.ibm.bi.dml.runtime.matrix.operators.UnaryOperator;
+import com.ibm.bi.dml.runtime.util.DataConverter;
 import com.ibm.bi.dml.runtime.util.FastBufferedDataInputStream;
 import com.ibm.bi.dml.runtime.util.FastBufferedDataOutputStream;
 import com.ibm.bi.dml.runtime.util.IndexRange;
@@ -629,13 +631,13 @@ public class MatrixBlock extends MatrixValue implements Externalizable
 		return new SparseRowsIterator(rlen, sparseRows);
 	}
 	
-	public SparseRowsIterator getSparseRowsIterator(int rowStart, int rowNum)
+	public SparseRowsIterator getSparseRowsIterator(int rl, int ru)
 	{
 		//check for valid format, should have been checked from outside
 		if( !sparse )
 			throw new RuntimeException("getSparseCellInterator should not be called for dense format");
 		
-		return new SparseRowsIterator(rowStart, rowStart+rowNum, sparseRows);
+		return new SparseRowsIterator(rl, ru, sparseRows);
 	}
 	
 	@Override
@@ -922,7 +924,7 @@ public class MatrixBlock extends MatrixValue implements Externalizable
 		//early abort (append guarantees no overwrite)
 		if( v == 0 ) 
 			return;
-		
+
 		if( !sparse ) //DENSE 
 		{
 			//allocate on demand (w/o overwriting nnz)
@@ -1811,13 +1813,7 @@ public class MatrixBlock extends MatrixValue implements Externalizable
 			System.arraycopy(src.denseBlock, 0, denseBlock, rl*clen+cl, src.rlen*src.clen);
 		else
 			for( int i=0, ix1=0, ix2=rl*clen+cl; i<src.rlen; i++, ix1+=src.clen, ix2+=clen ) {
-				try {
-					System.arraycopy(src.denseBlock, ix1, denseBlock, ix2, rowLen);
-				}
-				catch(Exception e) {
-					throw new DMLRuntimeException(e.getMessage() + " " + src.denseBlock.length + " " + denseBlock.length + " " + ix1 + " " + ix2);
-				}
-				
+				System.arraycopy(src.denseBlock, ix1, denseBlock, ix2, rowLen);
 			}
 	}
 	
@@ -2704,12 +2700,13 @@ public class MatrixBlock extends MatrixValue implements Externalizable
 	public static long estimateSizeDenseInMemory(long nrows, long ncols)
 	{
 		// basic variables and references sizes
-		long size = 44;
+		double size = 44;
 		
 		// core dense matrix block (double array)
-		size += nrows * ncols * 8;
+		size += 8d * nrows * ncols;
 		
-		return size;
+		// robustness for long overflows
+		return (long) Math.min(size, Long.MAX_VALUE);
 	}
 	
 	/**
@@ -2722,7 +2719,7 @@ public class MatrixBlock extends MatrixValue implements Externalizable
 	public static long estimateSizeSparseInMemory(long nrows, long ncols, double sparsity)
 	{
 		// basic variables and references sizes
-		long size = 44;
+		double size = 44;
 		
 		//NOTES:
 		// * Each sparse row has a fixed overhead of 8B (reference) + 32B (object) +
@@ -2731,17 +2728,14 @@ public class MatrixBlock extends MatrixValue implements Externalizable
 		// * Overheads for arrays, objects, and references refer to 64bit JVMs
 		// * If nnz < than rows we have only also empty rows.
 		
-		//account for sparsity and initial capacity
-		long cnnz = Math.max(SparseRow.initialCapacity, (long)Math.ceil(sparsity*ncols));
-		long rlen = Math.min(nrows, (long) Math.ceil(sparsity*nrows*ncols));
+		// account for sparsity and initial capacity
+		double cnnz = Math.max(SparseRow.initialCapacity, Math.ceil(sparsity*ncols));
+		double rlen = Math.min(nrows, Math.ceil(sparsity*nrows*ncols));
 		size += rlen * ( 116 + 12 * cnnz ); //sparse row
-		size += nrows * 8; //empty rows
+		size += nrows * 8d; //empty rows
 		
-		//OLD ESTIMATE: 
-		//int len = Math.max(SparseRow.initialCapacity, (int)Math.ceil(sparsity*ncols));
-		//size += nrows * (28 + 12 * len );
-		
-		return size;
+		// robustness for long overflows
+		return (long) Math.min(size, Long.MAX_VALUE);
 	}
 	
 	/**
@@ -5132,7 +5126,7 @@ public class MatrixBlock extends MatrixValue implements Externalizable
 		throws DMLUnsupportedOperationException, DMLRuntimeException
 	{
 		//check input dimensions and operators
-		if( m1.rlen!=m2.rlen || m2.rlen!=m3.rlen || m1.clen!=1 || m2.clen!=1 || m3.clen!=1 )
+		if( m1.rlen!=m2.rlen || m1.clen!=m2.clen || (m3!=null && (m2.rlen!=m3.rlen || m2.clen!=m3.clen)) )
 			throw new DMLRuntimeException("Invalid dimensions for aggregate tertiary ("+m1.rlen+"x"+m1.clen+", "+m2.rlen+"x"+m2.clen+", "+m3.rlen+"x"+m3.clen+").");
 		if( !( op.aggOp.increOp.fn instanceof KahanPlus && op.binaryFn instanceof Multiply) )
 			throw new DMLRuntimeException("Unsupported operator for aggregate tertiary operations.");
@@ -5148,6 +5142,49 @@ public class MatrixBlock extends MatrixValue implements Externalizable
 		return new DoubleObject(val);
 	}
 	
+	
+	/**
+	 * 
+	 * @param mbLeft
+	 * @param mbRight
+	 * @param mbOut
+	 * @param bOp
+	 * @oaram uaggOp
+	 * @return
+	 * @throws DMLUnsupportedOperationException
+	 * @throws DMLRuntimeException
+	 */
+	public MatrixBlock  uaggouterchainOperations(MatrixBlock mbLeft, MatrixBlock mbRight, MatrixBlock mbOut, BinaryOperator bOp, AggregateUnaryOperator uaggOp) 
+		throws DMLRuntimeException, DMLUnsupportedOperationException
+	{
+		double bv[] = DataConverter.convertToDoubleVector(mbRight);
+		int bvi[] = null;
+		
+		//process instruction
+		if (LibMatrixOuterAgg.isSupportedUaggOp(uaggOp, bOp))
+		{
+			if((LibMatrixOuterAgg.isRowIndexMax(uaggOp)) || (LibMatrixOuterAgg.isRowIndexMin(uaggOp))) 
+			{
+				bvi = LibMatrixOuterAgg.prepareRowIndices(bv.length, bv, bOp, uaggOp);
+			} else {
+				Arrays.sort(bv);
+			}
+
+			int iRows = (uaggOp.indexFn instanceof ReduceCol ? mbLeft.getNumRows(): 2); 
+			int iCols = (uaggOp.indexFn instanceof ReduceRow ? mbLeft.getNumColumns(): 2); 
+			if(mbOut==null)
+				mbOut=new MatrixBlock(iRows, iCols, false);  // Output matrix will be dense matrix most of the time.
+			else
+				mbOut.reset(iRows, iCols, false);
+
+			LibMatrixOuterAgg.aggregateMatrix(mbLeft, mbOut, bv, bvi, bOp, uaggOp);
+		} else
+			throw new DMLRuntimeException("Unsupported operator for unary aggregate operations.");
+		
+		return mbOut;
+	}
+	
+		
 	/**
 	 * Invocation from CP instructions. The aggregate is computed on the groups object
 	 * against target and weights. 
@@ -5799,13 +5836,13 @@ public class MatrixBlock extends MatrixValue implements Externalizable
 		else if( qop.wtype2 != null )
 			R.reset(rlen, clen, sparse);
 		else if( qop.wtype3 != null ) {
-			boolean left = (qop.wtype3==WDivMMType.LEFT);
-			R.reset( left?V.rlen:U.rlen, left?V.clen:U.clen, false);
+			MatrixCharacteristics mc = qop.wtype3.computeOutputCharacteristics(X.rlen, X.clen, U.clen);
+			R.reset( (int)mc.getRows(), (int)mc.getCols(), qop.wtype3.isBasic()?X.isInSparseFormat():false);
 		}
 		
 		//core block operation
 		if( qop.wtype1 != null ){ //wsloss
-			MatrixBlock W = (qop.wtype1!=WeightsType.NONE) ? checkType(wm) : null;
+			MatrixBlock W = qop.wtype1.hasFourInputs() ? checkType(wm) : null;
 			if( k > 1 )
 				LibMatrixMult.matrixMultWSLoss(X, U, V, W, R, qop.wtype1, k);
 			else
@@ -5818,6 +5855,7 @@ public class MatrixBlock extends MatrixValue implements Externalizable
 				LibMatrixMult.matrixMultWSigmoid(X, U, V, R, qop.wtype2);
 		}	
 		else if( qop.wtype3 != null ){ //wdivmm
+			//note: for wdivmm-minus X and W interchanged because W always present 
 			if( k > 1 )
 				LibMatrixMult.matrixMultWDivMM(X, U, V, R, qop.wtype3, k);
 			else

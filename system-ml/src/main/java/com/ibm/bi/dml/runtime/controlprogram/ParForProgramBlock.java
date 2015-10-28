@@ -116,8 +116,7 @@ import com.ibm.bi.dml.yarn.ropt.YarnClusterAnalyzer;
  *
  */
 public class ParForProgramBlock extends ForProgramBlock 
-{
-	
+{	
 	// execution modes
 	public enum PExecMode {
 		LOCAL,      //local (master) multi-core execution mode
@@ -271,6 +270,7 @@ public class ParForProgramBlock extends ForProgramBlock
 	protected boolean          _enableRuntimePiggybacking = false;
 	//specifics for spark 
 	protected Collection<String> _variablesRP = null;
+	protected Collection<String> _variablesECache = null;
 	
 	// program block meta data
 	protected long                _ID           = -1;
@@ -279,6 +279,7 @@ public class ParForProgramBlock extends ForProgramBlock
 	protected IDSequence         _resultVarsIDSeq = null;
 	protected IDSequence         _dpVarsIDSeq     = null;
 	protected boolean            _monitorReport   = false;
+	protected boolean            _hasFunctions    = true;
 	
 	// local parworker data
 	protected long[] 		   	                    _pwIDs   = null;
@@ -356,6 +357,9 @@ public class ParForProgramBlock extends ForProgramBlock
 		
 		//created profiling report after parfor exec
 		_monitorReport = _monitor;
+		
+		//materialized meta data (reused for all invocations)
+		_hasFunctions = ProgramRecompiler.containsAtLeastOneFunction(this);
 		
 		LOG.trace("PARFOR: ParForProgramBlock created with mode = "+_execMode+", optmode = "+_optMode+", numThreads = "+_numThreads);
 	}
@@ -490,9 +494,21 @@ public class ParForProgramBlock extends ForProgramBlock
 		_variablesRP = vars;
 	}
 	
+	public Collection<String> getSparkRepartitionVariables() {
+		return _variablesRP;
+	}
+	
+	public void setSparkEagerCacheVariables(Collection<String> vars) {
+		_variablesECache = vars;
+	}
+	
 	public long getNumIterations()
 	{
 		return _numIterations;
+	}
+	
+	public boolean hasFunctions() {
+		return _hasFunctions;
 	}
 
 	public static void initInternalConfigurations( DMLConfig conf )
@@ -546,9 +562,12 @@ public class ParForProgramBlock extends ForProgramBlock
 		//partitioning on demand (note: for fused data partitioning and execute the optimizer set 
 		//the data partitioner to NONE in order to prevent any side effects)
 		handleDataPartitioning( ec ); 
-		
+	
 		//repartitioning of variables for spark cpmm/zipmm in order prevent unnecessary shuffle
 		handleSparkRepartitioning( ec );
+		
+		//eager rdd caching of variables for spark in order prevent read/write contention
+		handleSparkEagerCaching( ec );
 		
 		if( _monitor ) 
 			StatisticMonitor.putPFStat(_ID, Stat.PARFOR_INIT_DATA_T, time.stop());
@@ -1189,11 +1208,30 @@ public class ParForProgramBlock extends ForProgramBlock
 	private void handleSparkRepartitioning( ExecutionContext ec ) 
 		throws DMLRuntimeException, DMLUnsupportedOperationException
 	{
-		if( _variablesRP != null && !_variablesRP.isEmpty() ) {
+		if( OptimizerUtils.isSparkExecutionMode() &&
+			_variablesRP != null && !_variablesRP.isEmpty() ) {
 			SparkExecutionContext sec = (SparkExecutionContext) ec;
 			
 			for( String var : _variablesRP )
 				sec.repartitionAndCacheMatrixObject(var);
+		}
+	}
+	
+	/**
+	 * 
+	 * @param ec
+	 * @throws DMLRuntimeException
+	 * @throws DMLUnsupportedOperationException
+	 */
+	private void handleSparkEagerCaching( ExecutionContext ec ) 
+		throws DMLRuntimeException, DMLUnsupportedOperationException
+	{
+		if( OptimizerUtils.isSparkExecutionMode() &&
+			_variablesECache != null && !_variablesECache.isEmpty() ) {
+			SparkExecutionContext sec = (SparkExecutionContext) ec;
+			
+			for( String var : _variablesECache )
+				sec.cacheMatrixObject(var);
 		}
 	}
 	
@@ -2017,6 +2055,7 @@ public class ParForProgramBlock extends ForProgramBlock
 		_recompileMemoryBudget = -1;
 		_enableRuntimePiggybacking = false;
 		_variablesRP           = null;
+		_variablesECache       = null;
 	}
 	
 	

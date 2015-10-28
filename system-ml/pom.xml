@@ -23,7 +23,7 @@
 	<parent>
 		<groupId>com.ibm.systemml</groupId>
 		<artifactId>systemml-parent</artifactId>
-		<version>5.2-SNAPSHOT</version>
+		<version>0.9.0-SNAPSHOT</version>
 		<relativePath>../pom.xml</relativePath>
 	</parent>
 
@@ -76,6 +76,15 @@
 							</artifactItems>
 							<overWriteReleases>false</overWriteReleases>
 							<overWriteSnapshots>true</overWriteSnapshots>
+						</configuration>
+					</execution>
+					<execution>
+						<phase>compile</phase>
+						<goals>
+							<goal>copy-dependencies</goal>
+						</goals>
+						<configuration>
+							<outputDirectory>${project.build.directory}/lib</outputDirectory>
 						</configuration>
 					</execution>
 				</executions>
@@ -140,8 +149,8 @@
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-compiler-plugin</artifactId>
 				<configuration>
-          			<source>1.6</source>
-          			<target>1.6</target>
+					<source>1.6</source>
+					<target>1.6</target>
 				</configuration>
 			</plugin>
 
@@ -151,7 +160,7 @@
 				<version>2.4</version><!--$NO-MVN-MAN-VER$-->
 				<executions>
 					<execution>
-						<id>create-package-assemblies</id>
+						<id>create-package-assembly</id>
 						<phase>package</phase>
 						<goals>
 							<goal>single</goal>
@@ -161,7 +170,19 @@
 						</configuration>
 					</execution>
 					<execution>
-						<id>create-bigsheets-package-assemblies</id>
+						<id>create-source-distribution-assembly</id>
+						<phase>package</phase>
+						<goals>
+							<goal>single</goal>
+						</goals>
+						<configuration>
+							<descriptors>
+								<descriptor>src/assembly/source.xml</descriptor>
+							</descriptors>
+						</configuration>
+					</execution>
+					<execution>
+						<id>create-cluster-binary-distribution-assembly</id>
 						<phase>package</phase>
 						<goals>
 							<goal>single</goal>
@@ -216,6 +237,34 @@
 					</archive>
 				</configuration>
 			</plugin>
+
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-resources-plugin</artifactId>
+				<version>2.4</version>
+				<executions>
+					<execution>
+						<id>copy-resources</id>
+						<phase>compile</phase>
+						<goals>
+							<goal>copy-resources</goal>
+						</goals>
+						<configuration>
+							<resources>
+								<resource>
+									<directory>${basedir}/src/test/config/hadoop_bin_windows/bin</directory>
+									<filtering>false</filtering>
+									<includes>
+										<include>*.*</include>
+									</includes>
+								</resource>
+							</resources>
+							<outputDirectory>${basedir}/target/lib/hadoop/bin</outputDirectory>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+
 			<plugin>
 				<groupId>org.antlr</groupId>
 				<artifactId>antlr4-maven-plugin</artifactId>
@@ -303,9 +352,14 @@
 
 					<includes>
 						<include>**/integration/**/*Suite.java</include>
+						
+						<include>**/integration/functions/binary/matrix_full_other/*Test.java</include>
+						<include>**/integration/functions/binary/matrix_full_cellwise/*Test.java</include>
 					</includes>
 
 					<excludes>
+						<exclude>**/integration/functions/binary/matrix_full_other/*Suite.java</exclude>
+						<exclude>**/integration/functions/binary/matrix_full_cellwise/*Suite.java</exclude>
 						<exclude>**/slowtest/**</exclude>
 					</excludes>
 
@@ -344,7 +398,7 @@
 
 	</build>
 
-	
+
 	<profiles>
 	<!-- Profile for Windows builds. Not currently needed, but might be needed 
 		in the future. -->
@@ -363,9 +417,7 @@
 	</profiles>
 
 
-
 	<dependencies>
-	
 
 		<dependency>
 			<groupId>org.apache.spark</groupId>
@@ -396,18 +448,65 @@
 			<version>14.0.1</version>
 		</dependency>
 
-
 		<dependency>
 			<groupId>org.apache.hadoop</groupId>
 			<artifactId>hadoop-common</artifactId>
-			<version>2.4.0</version>
+			<version>2.4.1</version>
 			<scope>provided</scope>
+			<exclusions>
+				<exclusion>
+					<groupId>javax.servlet</groupId>
+					<artifactId>servlet-api</artifactId>
+				</exclusion>
+			</exclusions>
 		</dependency>
 		<dependency>
 			<groupId>org.apache.hadoop</groupId>
 			<artifactId>hadoop-hdfs</artifactId>
-			<version>2.4.0</version>
+			<version>2.4.1</version>
 			<scope>provided</scope>
+			<exclusions>
+				<exclusion>
+					<groupId>javax.servlet</groupId>
+					<artifactId>servlet-api</artifactId>
+				</exclusion>
+			</exclusions>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.hadoop</groupId>
+			<artifactId>hadoop-client</artifactId>
+			<version>2.4.1</version>
+			<scope>provided</scope>
+			<exclusions>
+				<exclusion>
+					<groupId>javax.servlet</groupId>
+					<artifactId>servlet-api</artifactId>
+				</exclusion>
+			</exclusions>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.hadoop</groupId>
+			<artifactId>hadoop-mapreduce-client-app</artifactId>
+			<version>2.4.1</version>
+			<scope>provided</scope>
+			<exclusions>
+				<exclusion>
+					<groupId>javax.servlet</groupId>
+					<artifactId>servlet-api</artifactId>
+				</exclusion>
+			</exclusions>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.hadoop</groupId>
+			<artifactId>hadoop-mapreduce-client-jobclient</artifactId>
+			<version>2.4.1</version>
+			<scope>provided</scope>
+			<exclusions>
+				<exclusion>
+					<groupId>javax.servlet</groupId>
+					<artifactId>servlet-api</artifactId>
+				</exclusion>
+			</exclusions>
 		</dependency>
 		<dependency>
 			<groupId>commons-logging</groupId>
@@ -439,7 +538,7 @@
 				<exclusion>
 					<groupId>javax.jms</groupId>
 					<artifactId>jms</artifactId>
-				</exclusion>			
+				</exclusion>
 			</exclusions>
 		</dependency>
 
@@ -483,6 +582,12 @@
 			<artifactId>antlr4</artifactId>
 			<version>4.3</version>
 			<scope>provided</scope>
+			<exclusions>
+				<exclusion>
+					<artifactId>antlr-runtime</artifactId>
+					<groupId>org.antlr</groupId>
+				</exclusion>
+			</exclusions>
 		</dependency>
 		<dependency>
 			<groupId>org.antlr</groupId>
@@ -503,6 +608,12 @@
 			<artifactId>hadoop-yarn-common</artifactId>
 			<version>2.4.1</version>
 			<scope>provided</scope>
+			<exclusions>
+				<exclusion>
+					<groupId>javax.servlet</groupId>
+					<artifactId>servlet-api</artifactId>
+				</exclusion>
+			</exclusions>
 		</dependency>
 
 		<dependency>
@@ -524,8 +635,6 @@
 	<properties>
 		<!-- OS-specific JVM arguments for running integration tests -->
 		<integrationTestExtraJVMArgs />
-
-		<installDir>/usr/ibm/biginsights/${BIVersion}</installDir>
-
 	</properties>
+
 </project>

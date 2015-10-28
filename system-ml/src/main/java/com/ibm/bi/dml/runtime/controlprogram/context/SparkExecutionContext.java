@@ -24,7 +24,6 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
-import org.apache.spark.Accumulator;
 import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaSparkContext;
@@ -48,7 +47,6 @@ import com.ibm.bi.dml.runtime.instructions.spark.data.BroadcastObject;
 import com.ibm.bi.dml.runtime.instructions.spark.data.LineageObject;
 import com.ibm.bi.dml.runtime.instructions.spark.data.PartitionedMatrixBlock;
 import com.ibm.bi.dml.runtime.instructions.spark.data.RDDObject;
-import com.ibm.bi.dml.runtime.instructions.spark.functions.ComputeNonZerosBlockFunction;
 import com.ibm.bi.dml.runtime.instructions.spark.functions.CopyBinaryCellFunction;
 import com.ibm.bi.dml.runtime.instructions.spark.functions.CopyBlockPairFunction;
 import com.ibm.bi.dml.runtime.instructions.spark.functions.CopyTextInputFunction;
@@ -56,12 +54,11 @@ import com.ibm.bi.dml.runtime.instructions.spark.utils.RDDAggregateUtils;
 import com.ibm.bi.dml.runtime.instructions.spark.utils.SparkUtils;
 import com.ibm.bi.dml.runtime.matrix.data.InputInfo;
 import com.ibm.bi.dml.runtime.matrix.data.MatrixBlock;
-import com.ibm.bi.dml.runtime.matrix.data.MatrixIndexes;
 import com.ibm.bi.dml.runtime.matrix.data.MatrixCell;
+import com.ibm.bi.dml.runtime.matrix.data.MatrixIndexes;
 import com.ibm.bi.dml.runtime.matrix.data.OutputInfo;
 import com.ibm.bi.dml.runtime.matrix.mapred.MRJobConfiguration;
 import com.ibm.bi.dml.runtime.util.MapReduceTool;
-import com.ibm.bi.dml.runtime.util.UtilFunctions;
 import com.ibm.bi.dml.utils.Statistics;
 
 
@@ -73,6 +70,7 @@ public class SparkExecutionContext extends ExecutionContext
 	//internal configurations 
 	private static boolean LAZY_SPARKCTX_CREATION = true;
 	private static boolean ASYNCHRONOUS_VAR_DESTROY = true;
+	private static boolean FAIR_SCHEDULER_MODE = true;
 	
 	//executor memory and relative fractions as obtained from the spark configuration
 	private static long _memExecutors = -1; //mem per executors
@@ -80,6 +78,7 @@ public class SparkExecutionContext extends ExecutionContext
 	private static double _memRatioShuffle = -1;
 	private static int _numExecutors = -1; //total executors
 	private static int _defaultPar = -1; //total vcores  
+	private static boolean _confOnly = false; //infrastructure info based on config
 	
 	// Only one SparkContext may be active per JVM. You must stop() the active SparkContext before creating a new one. 
 	// This limitation may eventually be removed; see SPARK-2243 for more details.
@@ -181,11 +180,24 @@ public class SparkExecutionContext extends ExecutionContext
 				// This is discouraged in spark but have added only for those testcase that cannot stop the context properly
 				// conf.set("spark.driver.allowMultipleContexts", "true");
 				conf.set("spark.ui.enabled", "false");
-				// conf.set("spark.ui.port", "69389"); // some random port
 				_spctx = new JavaSparkContext(conf);
 			}
-			else {
-				_spctx = new JavaSparkContext();
+			else //default cluster setup
+			{
+				//setup systemml-preferred spark configuration (w/o user choice)
+				SparkConf conf = new SparkConf();
+				
+				//always set unlimited result size (required for cp collect)
+				conf.set("spark.driver.maxResultSize", "0");
+				
+				//always use the fair scheduler (for single jobs, it's equivalent to fifo
+				//but for concurrent jobs in parfor it ensures better data locality because
+				//round robin assignment mitigates the problem of 'sticky slots')
+				if( FAIR_SCHEDULER_MODE ) {
+					conf.set("spark.scheduler.mode", "FAIR");
+				}
+				
+				_spctx = new JavaSparkContext(conf);
 			}
 		}
 			
@@ -252,15 +264,17 @@ public class SparkExecutionContext extends ExecutionContext
 		//matrix object while all the logic is in the SparkExecContext
 		
 		JavaPairRDD<?,?> rdd = null;
-		//CASE 1: rdd already existing 
-		if( mo.getRDDHandle()!=null )
+		//CASE 1: rdd already existing (reuse if checkpoint or trigger
+		//pending rdd operations if not yet cached but prevent to re-evaluate 
+		//rdd operations if already executed and cached
+		if(    mo.getRDDHandle()!=null 
+			&& (mo.getRDDHandle().isCheckpointRDD() || !mo.isCached(false)) )
 		{
-			// TODO: Currently unchecked handling as it ignores inputInfo
-			// This is ok since this method is only supposed to be called only by Reblock which performs appropriate casting
+			//return existing rdd handling (w/o input format change)
 			rdd = mo.getRDDHandle().getRDD();
 		}
-		//CASE 2: dirty in memory data
-		else if( mo.isDirty() )
+		//CASE 2: dirty in memory data or cached result of rdd operations
+		else if( mo.isDirty() || mo.isCached(false) )
 		{
 			//get in-memory matrix block and parallelize it
 			MatrixBlock mb = mo.acquireRead(); //pin matrix in memory
@@ -505,6 +519,36 @@ public class SparkExecutionContext extends ExecutionContext
 	/**
 	 * 
 	 * @param rdd
+	 * @param rlen
+	 * @param clen
+	 * @param brlen
+	 * @param bclen
+	 * @param nnz
+	 * @return
+	 * @throws DMLRuntimeException
+	 */
+	public static PartitionedMatrixBlock toPartitionedMatrixBlock(JavaPairRDD<MatrixIndexes,MatrixBlock> rdd, int rlen, int clen, int brlen, int bclen, long nnz) 
+		throws DMLRuntimeException
+	{
+		PartitionedMatrixBlock out = new PartitionedMatrixBlock(rlen, clen, brlen, bclen);
+		
+		List<Tuple2<MatrixIndexes,MatrixBlock>> list = rdd.collect();
+		
+		//copy blocks one-at-a-time into output matrix block
+		for( Tuple2<MatrixIndexes,MatrixBlock> keyval : list )
+		{
+			//unpack index-block pair
+			MatrixIndexes ix = keyval._1();
+			MatrixBlock block = keyval._2();
+			out.setMatrixBlock((int)ix.getRowIndex(), (int)ix.getColumnIndex(), block);
+		}
+				
+		return out;
+	}
+	
+	/**
+	 * 
+	 * @param rdd
 	 * @param oinfo
 	 */
 	@SuppressWarnings("unchecked")
@@ -512,9 +556,8 @@ public class SparkExecutionContext extends ExecutionContext
 	{
 		JavaPairRDD<MatrixIndexes,MatrixBlock> lrdd = (JavaPairRDD<MatrixIndexes, MatrixBlock>) rdd.getRDD();
 		
-		//recompute nnz via accumulator 
-		Accumulator<Double> aNnz = getSparkContextStatic().accumulator(0L);
-		lrdd = lrdd.mapValues(new ComputeNonZerosBlockFunction(aNnz));
+		//recompute nnz 
+		long nnz = SparkUtils.computeNNZFromBlocks(lrdd);
 		
 		//save file is an action which also triggers nnz maintenance
 		lrdd.saveAsHadoopFile(path, 
@@ -523,7 +566,7 @@ public class SparkExecutionContext extends ExecutionContext
 				oinfo.outputFormatClass);
 		
 		//return nnz aggregate of all blocks
-		return UtilFunctions.toLong(aNnz.value());
+		return nnz;
 	}
 	
 	
@@ -553,12 +596,29 @@ public class SparkExecutionContext extends ExecutionContext
 	 * 
 	 * @return
 	 */
-	public static double getConfiguredTotalDataMemory()
+	public static double getConfiguredTotalDataMemory() {
+		return getConfiguredTotalDataMemory(false);
+	}
+	
+	/**
+	 * 
+	 * @param refresh
+	 * @return
+	 */
+	public static double getConfiguredTotalDataMemory(boolean refresh)
 	{
 		if( _memExecutors < 0 || _memRatioData < 0 )
 			analyzeSparkConfiguation();
 		
-		return ( _memExecutors * _memRatioData * _numExecutors );
+		//always get the current num executors on refresh because this might 
+		//change if not all executors are initially allocated and it is plan-relevant
+		if( refresh && !_confOnly ) {
+			JavaSparkContext jsc = getSparkContextStatic();
+			int numExec = Math.max(jsc.sc().getExecutorMemoryStatus().size() - 1, 1);
+			return _memExecutors * _memRatioData * numExec; 
+		}
+		else
+			return ( _memExecutors * _memRatioData * _numExecutors );
 	}
 	
 	public static int getNumExecutors()
@@ -584,7 +644,7 @@ public class SparkExecutionContext extends ExecutionContext
 		
 		//always get the current default parallelism on refresh because this might 
 		//change if not all executors are initially allocated and it is plan-relevant
-		if( refresh )
+		if( refresh && !_confOnly )
 			return getSparkContextStatic().defaultParallelism();
 		else
 			return _defaultPar;
@@ -612,13 +672,25 @@ public class SparkExecutionContext extends ExecutionContext
 		_memRatioData = sconf.getDouble("spark.storage.memoryFraction", 0.6); //default 60%
 		_memRatioShuffle = sconf.getDouble("spark.shuffle.memoryFraction", 0.2); //default 20%
 		
-		//get default parallelism (total number of executors and cores)
-		//note: spark context provides this information while conf does not
-		//(for num executors we need to correct for driver and local mode)
-		JavaSparkContext jsc = getSparkContextStatic();
-		_numExecutors = Math.max(jsc.sc().getExecutorMemoryStatus().size() - 1, 1);  
-		_defaultPar = jsc.defaultParallelism(); 
-
+		int numExecutors = sconf.getInt("spark.executor.instances", -1);
+		int numCoresPerExec = sconf.getInt("spark.executor.cores", -1);
+		int defaultPar = sconf.getInt("spark.default.parallelism", -1);
+		
+		if( numExecutors > 1 && (defaultPar > 1 || numCoresPerExec > 1) ) {
+			_numExecutors = numExecutors;
+			_defaultPar = (defaultPar>1) ? defaultPar : numExecutors * numCoresPerExec;
+			_confOnly = true;
+		}
+		else {
+			//get default parallelism (total number of executors and cores)
+			//note: spark context provides this information while conf does not
+			//(for num executors we need to correct for driver and local mode)
+			JavaSparkContext jsc = getSparkContextStatic();
+			_numExecutors = Math.max(jsc.sc().getExecutorMemoryStatus().size() - 1, 1);  
+			_defaultPar = jsc.defaultParallelism();
+			_confOnly = false; //implies env info refresh w/ spark context 
+		}
+		
 		//note: required time for infrastructure analysis on 5 node cluster: ~5-20ms. 
 	}
 
@@ -804,7 +876,8 @@ public class SparkExecutionContext extends ExecutionContext
 		
 		//repartition and persist rdd (force creation of shuffled rdd via merge)
 		JavaPairRDD<MatrixIndexes,MatrixBlock> out = RDDAggregateUtils.mergeByKey(in);
-		out.persist( Checkpoint.DEFAULT_STORAGE_LEVEL );
+		out.persist( Checkpoint.DEFAULT_STORAGE_LEVEL )
+		   .count(); //trigger caching to prevent contention
 		
 		//create new rdd handle, in-place of current matrix object
 		RDDObject inro =  mo.getRDDHandle();       //guaranteed to exist (see above)
@@ -812,6 +885,46 @@ public class SparkExecutionContext extends ExecutionContext
 		outro.setCheckpointRDD(true);              //mark as checkpointed
 		outro.addLineageChild(inro);               //keep lineage to prevent cycles on cleanup
 		mo.setRDDHandle(outro);				       
+	}
+	
+	/**
+	 * 
+	 * @param var
+	 * @throws DMLRuntimeException
+	 * @throws DMLUnsupportedOperationException
+	 */
+	@SuppressWarnings("unchecked")
+	public void cacheMatrixObject( String var ) 
+		throws DMLRuntimeException, DMLUnsupportedOperationException
+	{
+		//get input rdd and default storage level
+		MatrixObject mo = getMatrixObject(var);
+		JavaPairRDD<MatrixIndexes,MatrixBlock> in = (JavaPairRDD<MatrixIndexes, MatrixBlock>) 
+				getRDDHandleForMatrixObject(mo, InputInfo.BinaryBlockInputInfo);
+		
+		//persist rdd (force rdd caching)
+		in.count(); //trigger caching to prevent contention			       
+	}
+	
+	/**
+	 * 
+	 * @param poolName
+	 */
+	public void setThreadLocalSchedulerPool(String poolName) {
+		if( FAIR_SCHEDULER_MODE ) {
+			getSparkContext().sc().setLocalProperty(
+					"spark.scheduler.pool", poolName);
+		}
+	}
+	
+	/**
+	 * 
+	 */
+	public void cleanupThreadLocalSchedulerPool() {
+		if( FAIR_SCHEDULER_MODE ) {
+			getSparkContext().sc().setLocalProperty(
+					"spark.scheduler.pool", null);
+		}
 	}
 	
 	///////////////////////////////////////////
@@ -920,6 +1033,4 @@ public class SparkExecutionContext extends ExecutionContext
 		}
 		
 	}
-	
-
 }
