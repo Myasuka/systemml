@@ -2025,6 +2025,7 @@ public class MatrixBlock extends MatrixValue implements Externalizable
 		//read basic header (int rlen, int clen, byte type)
 		rlen = in.readInt();
 		clen = in.readInt();
+		System.out.println("rlen: " + rlen + ", clen: " + clen);
 		byte bformat = in.readByte();
 		
 		//check type information
@@ -2032,6 +2033,7 @@ public class MatrixBlock extends MatrixValue implements Externalizable
 			throw new IOException("invalid format: '"+bformat+"' (need to be 0-"+BlockType.values().length+").");
 			
 		BlockType format=BlockType.values()[bformat];
+		System.out.println("matrix format: " + format.name());
 		try 
 		{
 			switch(format)
@@ -2047,6 +2049,7 @@ public class MatrixBlock extends MatrixValue implements Externalizable
 					break;
 				case SPARSE_BLOCK:
 					nonZeros = readNnzInfo( in, false );
+					System.out.println("nonZeros: " + nonZeros);
 					sparse = evalSparseFormatInMemory(rlen, clen, nonZeros);
 					cleanupBlock(sparse, !sparse); 
 					if( sparse )

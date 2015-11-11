@@ -203,6 +203,7 @@ public class FastBufferedDataInputStream extends FilterInputStream implements Da
 	public long readSparseRows(int rlen, SparseRow[] rows) 
 		throws IOException 
 	{
+		System.out.println("_bufflen: " + _bufflen);
 		//counter for non-zero elements
 		long nnz = 0;
 		
@@ -210,7 +211,6 @@ public class FastBufferedDataInputStream extends FilterInputStream implements Da
 		for( int i=0; i<rlen; i++ )
 		{
 			int lnnz = readInt();
-			
 			if( lnnz > 0 ) //non-zero row
 			{
 				//get handle to sparse (allocate if necessary)

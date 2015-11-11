@@ -106,6 +106,7 @@ public class LibMatrixMult
 			ret.allocateDenseBlock();
 		
 		//prepare row-upper for special cases of vector-matrix
+		/** in general case, pm2 should be false, as matrix is large **/
 		boolean pm2 = checkParMatrixMultRightInput(m1, m2, Integer.MAX_VALUE);
 		int ru = pm2 ? m2.rlen : m1.rlen; 
 		
@@ -172,6 +173,7 @@ public class LibMatrixMult
 			ret.allocateSparseRowsBlock();
 		
 		//prepare row-upper for special cases of vector-matrix / matrix-matrix
+		/** in general case, pm2 should be false, as matrix is large **/
 		boolean pm2 = checkParMatrixMultRightInput(m1, m2, k);
 		int ru = pm2 ? m2.rlen : m1.rlen; 
 		
@@ -1261,6 +1263,9 @@ public class LibMatrixMult
 	 * @param m1
 	 * @param m2
 	 * @param ret
+	 * @param pm2 in general matrix-matrix case, this was false
+	 * @param rl default is 0
+	 * @param ru ru = pm2 ? m2.rlen : m1.rlen;
 	 * @throws DMLRuntimeException 
 	 */
 	private static void matrixMultSparseSparse(MatrixBlock m1, MatrixBlock m2, MatrixBlock ret, boolean pm2, int rl, int ru) 
@@ -2974,8 +2979,7 @@ public class LibMatrixMult
 	private static void vectMultiplyAdd( final double aval, double[] b, double[] c, int[] bix, final int ci, final int len )
 	{
 		final int bn = len%8;
-		
-		//rest, not aligned to 8-blocks
+        //rest, not aligned to 8-blocks
 		for( int j = 0; j < bn; j++ )
 			c[ ci + bix[j] ] += aval * b[ j ];
 		
@@ -3006,6 +3010,7 @@ public class LibMatrixMult
 			c[ ci + bix[j] ] += aval * b[ j ];
 		
 		//unrolled 8-block (for better instruction-level parallelism)
+		/** every 8 elements read in, why it performs better?**/
 		for( int j = bi+bn; j < len; j+=8 )
 		{
 			//read 64B cacheline of b

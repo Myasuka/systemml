@@ -198,7 +198,8 @@ public class SparseRow implements Serializable
 	 */
 	public boolean set(int col, double v)
 	{
-		//search for existing col index
+		//search for existing col index,
+		/** use binary search here, means the indices array is sorted**/
 		int index = Arrays.binarySearch(indexes, 0, size, col);
 		if( index >= 0 ) {
 			//delete/overwrite existing value (on value delete, we shift 
