@@ -22,15 +22,12 @@ import java.util.ArrayList;
 
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.function.PairFlatMapFunction;
-import org.apache.spark.broadcast.Broadcast;
 
 import scala.Tuple2;
 
 import com.ibm.bi.dml.hops.OptimizerUtils;
 import com.ibm.bi.dml.lops.MapMult.CacheType;
 import com.ibm.bi.dml.lops.PMMJ;
-import com.ibm.bi.dml.parser.Expression.DataType;
-import com.ibm.bi.dml.parser.Expression.ValueType;
 import com.ibm.bi.dml.runtime.DMLRuntimeException;
 import com.ibm.bi.dml.runtime.DMLUnsupportedOperationException;
 import com.ibm.bi.dml.runtime.controlprogram.context.ExecutionContext;
@@ -39,7 +36,7 @@ import com.ibm.bi.dml.runtime.functionobjects.Multiply;
 import com.ibm.bi.dml.runtime.functionobjects.Plus;
 import com.ibm.bi.dml.runtime.instructions.InstructionUtils;
 import com.ibm.bi.dml.runtime.instructions.cp.CPOperand;
-import com.ibm.bi.dml.runtime.instructions.spark.data.PartitionedMatrixBlock;
+import com.ibm.bi.dml.runtime.instructions.spark.data.PartitionedBroadcastMatrix;
 import com.ibm.bi.dml.runtime.instructions.spark.utils.RDDAggregateUtils;
 import com.ibm.bi.dml.runtime.matrix.MatrixCharacteristics;
 import com.ibm.bi.dml.runtime.matrix.data.MatrixBlock;
@@ -76,19 +73,14 @@ public class PmmSPInstruction extends BinarySPInstruction
 	public static PmmSPInstruction parseInstruction( String str ) 
 		throws DMLRuntimeException 
 	{
-		CPOperand in1 = new CPOperand("", ValueType.UNKNOWN, DataType.UNKNOWN);
-		CPOperand in2 = new CPOperand("", ValueType.UNKNOWN, DataType.UNKNOWN);
-		CPOperand nrow = new CPOperand("", ValueType.UNKNOWN, DataType.UNKNOWN);
-		CPOperand out = new CPOperand("", ValueType.UNKNOWN, DataType.UNKNOWN);
-
+		String parts[] = InstructionUtils.getInstructionPartsWithValueType(str);
 		String opcode = InstructionUtils.getOpCode(str);
 
 		if ( opcode.equalsIgnoreCase(PMMJ.OPCODE)) {
-			String parts[] = InstructionUtils.getInstructionPartsWithValueType(str);
-			in1.split(parts[1]);
-			in2.split(parts[2]);
-			nrow.split(parts[3]);
-			out.split(parts[4]);
+			CPOperand in1 = new CPOperand(parts[1]);
+			CPOperand in2 = new CPOperand(parts[2]);
+			CPOperand nrow = new CPOperand(parts[3]);
+			CPOperand out = new CPOperand(parts[4]);
 			CacheType type = CacheType.valueOf(parts[5]);
 			
 			AggregateOperator agg = new AggregateOperator(0, Plus.getPlusFnObject());
@@ -113,7 +105,7 @@ public class PmmSPInstruction extends BinarySPInstruction
 		
 		//get inputs
 		JavaPairRDD<MatrixIndexes,MatrixBlock> in1 = sec.getBinaryBlockRDDHandleForVariable( rddVar );
-		Broadcast<PartitionedMatrixBlock> in2 = sec.getBroadcastForVariable( bcastVar ); 
+		PartitionedBroadcastMatrix in2 = sec.getBroadcastForVariable( bcastVar ); 
 		
 		//execute pmm instruction
 		JavaPairRDD<MatrixIndexes,MatrixBlock> out = in1
@@ -137,18 +129,15 @@ public class PmmSPInstruction extends BinarySPInstruction
 	{
 		private static final long serialVersionUID = -1696560050436469140L;
 		
-		private Broadcast<PartitionedMatrixBlock> _pmV = null;
+		private PartitionedBroadcastMatrix _pmV = null;
 		private long _rlen = -1;
 		private int _brlen = -1;
 		
-		public RDDPMMFunction( CacheType type, Broadcast<PartitionedMatrixBlock> binput, long rlen, int brlen ) 
+		public RDDPMMFunction( CacheType type, PartitionedBroadcastMatrix binput, long rlen, int brlen ) 
 			throws DMLRuntimeException, DMLUnsupportedOperationException
 		{
 			_brlen = brlen;
 			_rlen = rlen;
-			
-			//partition vector for fast in memory lookup (right now always CacheType.LEFT) 
-			//in-memory colblock partitioning (according to brlen of rdd)
 			_pmV = binput;
 		}
 		
@@ -161,7 +150,7 @@ public class PmmSPInstruction extends BinarySPInstruction
 			MatrixBlock mb2 = arg0._2();
 			
 			//get the right hand side matrix
-			MatrixBlock mb1 = _pmV.value().getMatrixBlock((int)ixIn.getRowIndex(), 1);
+			MatrixBlock mb1 = _pmV.getMatrixBlock((int)ixIn.getRowIndex(), 1);
 			
 			//compute target block indexes
 			long minPos = UtilFunctions.toLong( mb1.minNonZero() );

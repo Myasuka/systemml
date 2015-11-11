@@ -304,7 +304,7 @@ The for loop body may contain any sequence of statements. The statements in the 
  
 #### ParFor Statement
 
-The syntax and semantics of a parfor statement are equivalent to a for statement except for the different keyword and a list of optional parameters.
+The syntax and semantics of a `parfor` (parallel `for`) statement are equivalent to a `for` statement except for the different keyword and a list of optional parameters.
 
     parfor (var in <for_predicate> <parfor_paramslist> ) {
         <statement>*
@@ -329,7 +329,36 @@ The syntax and semantics of a parfor statement are equivalent to a for statement
 	<result_merge_mode>           is one of the following tokens: LOCAL_MEM LOCAL_FILE LOCAL_AUTOMATIC REMOTE_MR 
 	<optimization_mode>           is one of the following tokens: NONE RULEBASED HEURISTIC GREEDY FULL_DP
 	 
-If any of these parameters is not specified, the following respective defaults are used: check = 1, par = [number of virtual processors on master node], mode = LOCAL, taskpartitioner = FIXED, tasksize =1, datapartitioner = NONE, resultmerge = LOCAL_AUTOMATIC, opt = RULEBASED.
+If any of these parameters is not specified, the following respective defaults are used: `check = 1`, `par = [number of virtual processors on master node]`, `mode = LOCAL`, `taskpartitioner = FIXED`, `tasksize = 1`, `datapartitioner = NONE`, `resultmerge = LOCAL_AUTOMATIC`, `opt = RULEBASED`.
+
+Of particular note is the `check` parameter. SystemML's `parfor` statement by default (`check = 1`) performs dependency analysis in an
+attempt to guarantee result correctness for parallel execution. For example, the following `parfor` statement is **incorrect** because
+the iterations do not act independently, so they are not parallizable. The iterations incorrectly try to increment the same `sum` variable.
+
+	sum = 0
+	parfor(i in 1:3) {
+	    sum = sum + i; # not parallizable - generates error
+	}
+	print(sum)
+
+SystemML's `parfor` dependency analysis can occasionally result in false positives, as in the following example. This example creates a 2x30
+matrix. It then utilizes a `parfor` loop to write 10 2x3 matrices into the 2x30 matrix. This `parfor` statement is parallizable and correct,
+but the dependency analysis generates a false positive dependency error for the variable `ms`.
+
+	ms = matrix(0, rows=2, cols=3*10)
+	parfor (v in 1:10) { # parallizable - false positive
+	    mv = matrix(v, rows=2, cols=3)
+	    ms[,(v-1)*3+1:v*3] = mv
+	}
+
+If a false positive arises but you are certain that the `parfor` is parallizable, the `parfor` dependency check can be disabled via
+the `check = 0` option.
+
+	ms = matrix(0, rows=2, cols=3*10)
+	parfor (v in 1:10, check=0) { # parallizable
+	    mv = matrix(v, rows=2, cols=3)
+	    ms[,(v-1)*3+1:v*3] = mv
+	}
 
 ### User-Defined Function (UDF)
  
@@ -526,7 +555,8 @@ Table 3. Matrix Construction, Manipulation, and Aggregation Built-In Functions
 
 Function | Description | Parameters | Example
 -------- | ----------- | ---------- | -------
-append() | Adds the second argument as additional columns to the first argument (note that the first argument is not over-written). Append is meant to be used in situations where one cannot use left-indexing. | Input : (X &lt;matrix&gt;, Y &lt;matrix&gt;) <br/>Output : &lt;matrix&gt; <br/> X and Y are matrices (with possibly multiple columns), where the number of rows in X and Y must be the same. Output is a matrix with exactly the same number of rows as X and Y. Let n1 and n2 denote the number of columns of matrix X and Y, respectively. The returned matrix has n1+n2 columns, where the first n1 columns contain X and the last n2 columns contain Y. | A = matrix(1, rows=2,cols=5) <br/> B = matrix(1, rows=2,cols=3) <br/> C = append(A,B) <br/> print( "Dimensions of C:" + nrow(C) + " X " + ncol(C)) <br/> The output of above example is: <br/> Dimensions of C:2 X 8
+append() | Adds the second argument as additional columns to the first argument (note that the first argument is not over-written). Append is meant to be used in situations where one cannot use left-indexing. <br/> **NOTE: append() has been replaced by cbind(), so its use is discouraged.** | Input: (X &lt;matrix&gt;, Y &lt;matrix&gt;) <br/>Output: &lt;matrix&gt; <br/> X and Y are matrices (with possibly multiple columns), where the number of rows in X and Y must be the same. Output is a matrix with exactly the same number of rows as X and Y. Let n1 and n2 denote the number of columns of matrix X and Y, respectively. The returned matrix has n1+n2 columns, where the first n1 columns contain X and the last n2 columns contain Y. | A = matrix(1, rows=2,cols=5) <br/> B = matrix(1, rows=2,cols=3) <br/> C = append(A,B) <br/> print("Dimensions of C: " + nrow(C) + " X " + ncol(C)) <br/> The output of above example is: <br/> Dimensions of C: 2 X 8
+cbind() | Column-wise matrix concatenation. Concatenates the second matrix as additional columns to the first matrix | Input: (X &lt;matrix&gt;, Y &lt;matrix&gt;) <br/>Output: &lt;matrix&gt; <br/> X and Y are matrices, where the number of rows in X and the number of rows in Y are the same. | A = matrix(1, rows=2,cols=3) <br/> B = matrix(2, rows=2,cols=3) <br/> C = cbind(A,B) <br/> print("Dimensions of C: " + nrow(C) + " X " + ncol(C)) <br/> Output: <br/> Dimensions of C: 2 X 6
 matrix() | Matrix constructor (assigning all the cells to numeric literals). | Input: (&lt;init&gt;, rows=&lt;value&gt;, cols=&lt;value&gt;) <br/> init: numeric literal; <br/> rows/cols: number of rows/cols (expression) <br/> Output: matrix | # 10x10 matrix initialized to 0 <br/> A = matrix (0, rows=10, cols=10)
  | Matrix constructor (reshaping an existing matrix). | Input: (&lt;existing matrix&gt;, rows=&lt;value&gt;, cols=&lt;value&gt;, byrow=TRUE) <br/> Output: matrix | A = matrix (0, rows=10, cols=10) <br/> B = matrix (A, rows=100, cols=1)
  | Matrix constructor (initializing using string). | Input: (&lt;initialization string&gt;, rows=&lt;value&gt;, cols=&lt;value&gt;) <br/> Output: matrix | A = matrix("4 3 2 5 7 8", rows=3, cols=2) <br/> Creates a matrix: [ [4, 3], [2, 5], [7, 8] ]
@@ -535,6 +565,7 @@ min() <br/> max() | Return the minimum/maximum cell values of two matrices, matr
 nrow(), <br/> ncol(), <br/> length() | Return the number of rows, number of columns, or number of cells in matrix respectively. | Input: matrix <br/> Output: scalar | nrow(X)
 prod() | Return the product of all cells in matrix | Input: matrix <br/> Output: scalarj | prod(X)
 rand() | Generates a random matrix | Input: (rows=&lt;value&gt;, cols=&lt;value&gt;, min=&lt;value&gt;, max=&lt;value&gt;, sparsity=&lt;value&gt;, pdf=&lt;string&gt;, seed=&lt;value&gt;) <br/> rows/cols: Number of rows/cols (expression) <br/> min/max: Min/max value for cells (either constant value, or variable that evaluates to constant value) <br/> sparsity: fraction of non-zero cells (constant value) <br/> pdf: “uniform” (min, max) distribution, or “normal” (0,1) distribution; or “poisson” (lambda=1) distribution. string; default value is “uniform”. Note that, for the Poisson distribution, users can provide the mean/lambda parameter as follows: <br/> rand(rows=1000,cols=1000, pdf=”poisson”, lambda=2.5). <br/> The default value for lambda is 1. <br/> seed: Every invocation of rand() internally generates a random seed with which the cell values are generated. One can optionally provide a seed when repeatability is desired.  <br/> Output: matrix | X = rand(rows=10, cols=20, min=0, max=1, pdf="uniform", sparsity=0.2) <br/> The example generates a 10 x 20 matrix, with cell values uniformly chosen at random between 0 and 1, and approximately 20% of cells will have non-zero values.
+rbind() | Row-wise matrix concatenation. Concatenates the second matrix as additional rows to the first matrix | Input: (X &lt;matrix&gt;, Y &lt;matrix&gt;) <br/>Output: &lt;matrix&gt; <br/> X and Y are matrices, where the number of columns in X and the number of columns in Y are the same. | A = matrix(1, rows=2,cols=3) <br/> B = matrix(2, rows=2,cols=3) <br/> C = rbind(A,B) <br/> print("Dimensions of C: " + nrow(C) + " X " + ncol(C)) <br/> Output: <br/> Dimensions of C: 4 X 3
 removeEmpty() | Removes all empty rows or columns from the input matrix target X according to the specified margin. | Input : (target= X &lt;matrix&gt;, margin="...") <br/> Output : &lt;matrix&gt; <br/> Valid values for margin are "rows" or "cols". | A = removeEmpty(target=X, margin="rows")
 replace() | Creates a copy of input matrix X, where all values that are equal to the scalar pattern s1 are replaced with the scalar replacement s2. | Input : (target= X &lt;matrix&gt;, pattern=&lt;scalar&gt;, replacement=&lt;scalar&gt;) <br/> Output : &lt;matrix&gt; <br/> If s1 is NaN, then all NaN values of X are treated as equal and hence replaced with s2. Positive and negative infinity are treated as different values. | A = replace(target=X, pattern=s1, replacement=s2)
 seq() | Creates a single column vector with values starting from &lt;from&gt;, to &lt;to&gt;, in increments of &lt;increment&gt; | Input: (&lt;from&gt;, &lt;to&gt;, &lt;increment&gt;) <br/> Output: &lt;matrix&gt; | S = seq (10, 200, 10)

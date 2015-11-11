@@ -165,12 +165,12 @@ public class RewriteConstantFolding extends HopRewriteRule
 		//fold conjunctive predicate if at least one input is literal 'false'
 		else if( isApplicableFalseConjunctivePredicate(root) )
 		{
-			root = new LiteralOp(String.valueOf(false), false);
+			root = new LiteralOp(false);
 		}
 		//fold disjunctive predicate if at least one input is literal 'true'
 		else if( isApplicableTrueDisjunctivePredicate(root) )
 		{
-			root = new LiteralOp(String.valueOf(true), true);
+			root = new LiteralOp(true);
 		}
 			
 		
@@ -217,10 +217,10 @@ public class RewriteConstantFolding extends HopRewriteRule
 		ScalarObject so = (ScalarObject) ec.getVariable(TMP_VARNAME);
 		LiteralOp literal = null;
 		switch( bop.getValueType() ){
-			case DOUBLE:  literal = new LiteralOp(String.valueOf(so.getDoubleValue()),so.getDoubleValue()); break;
-			case INT:     literal = new LiteralOp(String.valueOf(so.getLongValue()),so.getLongValue()); break;
-			case BOOLEAN: literal = new LiteralOp(String.valueOf(so.getBooleanValue()),so.getBooleanValue()); break;
-			case STRING:  literal = new LiteralOp(String.valueOf(so.getStringValue()),so.getStringValue()); break;	
+			case DOUBLE:  literal = new LiteralOp(so.getDoubleValue()); break;
+			case INT:     literal = new LiteralOp(so.getLongValue()); break;
+			case BOOLEAN: literal = new LiteralOp(so.getBooleanValue()); break;
+			case STRING:  literal = new LiteralOp(so.getStringValue()); break;	
 			default:
 				throw new HopsException("Unsupported literal value type: "+bop.getValueType());
 		}
@@ -277,7 +277,8 @@ public class RewriteConstantFolding extends HopRewriteRule
 		return (   hop instanceof BinaryOp 
 				&& in.get(0) instanceof LiteralOp 
 				&& in.get(1) instanceof LiteralOp
-				&& ((BinaryOp)hop).getOp()!=OpOp2.APPEND );
+				&& ((BinaryOp)hop).getOp()!=OpOp2.CBIND
+				&& ((BinaryOp)hop).getOp()!=OpOp2.RBIND);
 		
 		//string append is rejected although possible because it
 		//messes up the explain runtime output due to introduced \n 

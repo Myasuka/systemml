@@ -1036,7 +1036,7 @@ public abstract class Hop
 	public enum OpOp2 {
 		PLUS, MINUS, MULT, DIV, MODULUS, INTDIV, LESS, LESSEQUAL, GREATER, GREATEREQUAL, EQUAL, NOTEQUAL, 
 		MIN, MAX, AND, OR, LOG, POW, PRINT, CONCAT, QUANTILE, INTERQUANTILE, IQM, 
-		CENTRALMOMENT, COVARIANCE, APPEND, SEQINCR, SOLVE, MEDIAN, INVALID,
+		CENTRALMOMENT, COVARIANCE, CBIND, RBIND, SEQINCR, SOLVE, MEDIAN, INVALID,
 		//fused ML-specific operators for performance
 		MINUS_NZ, //sparse-safe minus: X-(mean*ppred(X,0,!=))
 		LOG_NZ, //sparse-safe log; ppred(X,0,"!=")*log(X,0.5)
@@ -1346,7 +1346,8 @@ public abstract class Hop
 		HopsOpOp2String.put(OpOp2.MEDIAN, "median");
 		HopsOpOp2String.put(OpOp2.CENTRALMOMENT, "cm");
 		HopsOpOp2String.put(OpOp2.COVARIANCE, "cov");
-		HopsOpOp2String.put(OpOp2.APPEND, "app");
+		HopsOpOp2String.put(OpOp2.CBIND, "cbind");
+		HopsOpOp2String.put(OpOp2.RBIND, "rbind");
 		HopsOpOp2String.put(OpOp2.SOLVE, "solve");
 		HopsOpOp2String.put(OpOp2.SEQINCR, "seqincr");
 	}
@@ -1510,8 +1511,10 @@ public abstract class Hop
 	protected void refreshRowsParameterInformation( Hop input )
 	{
 		long size = computeSizeInformation(input);
-		if( size > 0 )
-			setDim1( size );
+			
+		//always set the computed size not just if known (positive) in order to allow 
+		//recompile with unknowns to reset sizes (otherwise potential for incorrect results)
+		setDim1( size );
 	}
 	
 	
@@ -1521,8 +1524,10 @@ public abstract class Hop
 	protected void refreshColsParameterInformation( Hop input )
 	{
 		long size = computeSizeInformation(input);
-		if( size > 0 )
-			setDim2( size );
+		
+		//always set the computed size not just if known (positive) in order to allow 
+		//recompile with unknowns to reset sizes (otherwise potential for incorrect results)
+		setDim2( size );
 	}
 	
 	/**
