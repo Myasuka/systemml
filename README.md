@@ -1,3 +1,11 @@
+# SystemML News
+
+### We have been accepted into Apache Incubator, and we are now located at 
+
+[https://github.com/apache/incubator-systemml](https://github.com/apache/incubator-systemml)
+
+
+
 # SystemML
 
 SystemML is a flexible, scalable machine learning (ML) language written in Java.
