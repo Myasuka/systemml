@@ -503,6 +503,11 @@ public class OptimizerUtils
 		//check if both output matrix and partitioned matrix fit into local mem budget
 		return (memPinned + memMatrix + memPMatrix < getLocalMemBudget());
 	}
+
+	/* change for easy compare */
+    public static String getMMMethod(){
+        return ConfigurationManager.getConfig().getTextValue(DMLConfig.MM_METHOD);
+    }
 	
 	/**
 	 * Returns the number of reducers that potentially run in parallel.

@@ -297,14 +297,25 @@ public class ProgramBlock
 		throws DMLRuntimeException
 	{	
 		try 
-		{	
+		{
+            /* change for easy compare */
+			System.out.println("###########################");
+            System.out.println("currInst.getType(): " + currInst.getType());
+			currInst.printMe();
+			ArrayList<String> varList = ec.getVarList();
+			for (String s: varList){
+				System.out.println(s);
+			}
 			// start time measurement for statistics
 			long t0 = (DMLScript.STATISTICS || LOG.isTraceEnabled()) ? 
 					System.nanoTime() : 0;
 					
 			// pre-process instruction (debug state, inst patching, listeners)
 			Instruction tmp = currInst.preprocessInstruction( ec );
-			
+            /* change for easy compare */
+            System.out.println("tmp.getExtendedOpcode():" + tmp.getExtendedOpcode());
+            System.out.println("tmp.getType:" + tmp.getType());
+            System.out.println("tmp.getOpcode():" + tmp.getOpcode());
 			// process actual instruction
 			tmp.processInstruction( ec );
 			

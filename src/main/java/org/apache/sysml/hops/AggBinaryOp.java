@@ -1596,8 +1596,21 @@ public class AggBinaryOp extends Hop implements MultiThreadedHop
 			                                        MMTSJType mmtsj, ChainType chainType, boolean leftPMInput ) 
 	{	
 		double memBudget = MAPMULT_MEM_MULTIPLIER * OptimizerUtils.getRemoteMemBudgetMap(true);		
-		
-		// Step 0: check for forced mmultmethod
+
+       	/* change for easy compare */
+        String m = OptimizerUtils.getMMMethod();
+        if(m.equals("rmm")){
+            FORCED_MMULT_METHOD = MMultMethod.RMM;
+        }else if(m.equals("mapmm_l")){
+            FORCED_MMULT_METHOD = MMultMethod.MAPMM_L;
+        }else if(m.equals("mapmm_r")){
+            FORCED_MMULT_METHOD = MMultMethod.MAPMM_R;
+        }else if(m.equals("cpmm")){
+            FORCED_MMULT_METHOD = MMultMethod.CPMM;
+        }else if(m.equals("pmapmm")){
+            FORCED_MMULT_METHOD = MMultMethod.PMAPMM;
+        }
+        // Step 0: check for forced mmultmethod
 		if( FORCED_MMULT_METHOD !=null )
 			return FORCED_MMULT_METHOD;
 		
@@ -1654,8 +1667,14 @@ public class AggBinaryOp extends Hop implements MultiThreadedHop
 		
 		//memory estimates for remote execution (broadcast and outputs)
 		double footprint1 = getMapmmMemEstimate(m1_rows, m1_cols, m1_rpb, m1_cpb, m1_nnz, m2_rows, m2_cols, m2_rpb, m2_cpb, m2_nnz, 1, false);
-		double footprint2 = getMapmmMemEstimate(m1_rows, m1_cols, m1_rpb, m1_cpb, m1_nnz, m2_rows, m2_cols, m2_rpb, m2_cpb, m2_nnz, 2, false);		
-		
+		double footprint2 = getMapmmMemEstimate(m1_rows, m1_cols, m1_rpb, m1_cpb, m1_nnz, m2_rows, m2_cols, m2_rpb, m2_cpb, m2_nnz, 2, false);
+        System.out.println("****************************************************************************");
+        System.out.println("m1SizeP: " + m1SizeP);
+        System.out.println("m2SizeP: " + m2SizeP);
+        System.out.println("footprint1: " + footprint1);
+        System.out.println("footprint2: " + footprint2);
+        System.out.println("memBudgetExec: " + memBudget + ", footprint1 or footprint2 should < memBudgetExec");
+        System.out.println("****************************************************************************");
 		if (   (footprint1 < memBudget && m1_rows>=0 && m1_cols>=0)
 			|| (footprint2 < memBudget && m2_rows>=0 && m2_cols>=0) ) 
 		{
@@ -1843,7 +1862,9 @@ public class AggBinaryOp extends Hop implements MultiThreadedHop
 		//TODO currently we reuse the mr estimates, these need to be fine-tune for our spark operators
 		double rmm_costs = getRMMCostEstimate(m1_rows, m1_cols, m1_rpb, m1_cpb, m2_rows, m2_cols, m2_rpb, m2_cpb);
 		double cpmm_costs = getCPMMCostEstimate(m1_rows, m1_cols, m1_rpb, m1_cpb, m2_rows, m2_cols, m2_rpb, m2_cpb);
-				
+
+
+
 		//final mmult method decision 
 		if ( cpmm_costs < rmm_costs ) 
 			return MMultMethod.CPMM;
@@ -1884,7 +1905,10 @@ public class AggBinaryOp extends Hop implements MultiThreadedHop
 				                    numReducersRMM); //available reducers
 		// RMM total costs
 		double rmm_costs = (rmm_shuffle + rmm_io) / rmm_nred;
-		
+
+        /* change for easy compare */
+        System.out.printf("rmm_costs: (%d+%d)/%d\n", (int)rmm_shuffle, (int)rmm_io, (int)rmm_nred);
+        System.out.println("rmm_costs: " + rmm_costs);
 		// return total costs
 		return rmm_costs;
 	}
@@ -1929,7 +1953,10 @@ public class AggBinaryOp extends Hop implements MultiThreadedHop
 		// CPMM total costs
 		double cpmm_costs =  (cpmm_shuffle1+cpmm_io1)/cpmm_nred1  //cpmm phase1
 		                    +(cpmm_shuffle2+cpmm_io2)/cpmm_nred2; //cpmm phase2
-		
+        /* change for easy compare */
+        System.out.printf("cpmm_costs: (%d+%d)/%d+(%d+%d)/%d\n",
+                (int)cpmm_shuffle1, (int)cpmm_io1, (int)cpmm_nred1, (int)cpmm_shuffle2, (int)cpmm_io2, (int)cpmm_nred2);
+        System.out.println("cpmm_costs: " + cpmm_costs);
 		//return total costs
 		return cpmm_costs;
 	}

@@ -31,7 +31,8 @@ public class InstructionParser
 {		
 	public static Instruction parseSingleInstruction ( String str ) 
 		throws DMLUnsupportedOperationException, DMLRuntimeException 
-	{	
+	{
+		System.out.println("in parseMixedInstructions, str: " + str);
 		if ( str == null || str.isEmpty() )
 			return null;
 		

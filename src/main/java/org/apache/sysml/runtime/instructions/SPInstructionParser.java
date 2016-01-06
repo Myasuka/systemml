@@ -276,7 +276,8 @@ public class SPInstructionParser extends InstructionParser
 	{	
 		if ( str == null || str.isEmpty() ) 
 			return null;
-		
+		System.out.println("**** sptype: " + sptype);
+		System.out.println("**** str: " + str);
 		String [] parts = null;
 		switch(sptype) 
 		{

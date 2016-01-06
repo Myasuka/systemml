@@ -61,6 +61,10 @@ public class DMLConfig
 	public static final String SCRATCH_SPACE        = "scratch";
 	public static final String OPTIMIZATION_LEVEL   = "optlevel";	
 	public static final String NUM_REDUCERS         = "numreducers";
+
+    /* change for easy compare */
+    public static final String MM_METHOD         = "mmmethod";
+
 	public static final String JVM_REUSE            = "jvmreuse";
 	public static final String DEFAULT_BLOCK_SIZE   = "defaultblocksize"; 	
 	public static final String YARN_APPMASTER       = "dml.yarn.appmaster"; 	
@@ -95,7 +99,11 @@ public class DMLConfig
 		_defaultVals.put(SCRATCH_SPACE,        "scratch_space" );
 		_defaultVals.put(OPTIMIZATION_LEVEL,   "2" );
 		_defaultVals.put(NUM_REDUCERS,         "10" );
-		_defaultVals.put(JVM_REUSE,            "false" );
+
+    	/* change for easy compare */
+        _defaultVals.put(MM_METHOD,         "null" );
+
+        _defaultVals.put(JVM_REUSE,            "false" );
 		_defaultVals.put(DEFAULT_BLOCK_SIZE,   "1000" );
 		_defaultVals.put(YARN_APPMASTER,       "false" );
 		_defaultVals.put(YARN_APPMASTERMEM,    "2048" );
