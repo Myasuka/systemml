@@ -1,0 +1,140 @@
+<!--
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ * 
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+-->
+<assembly
+	xmlns="http://maven.apache.org/plugins/maven-assembly-plugin/assembly/1.1.2"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/plugins/maven-assembly-plugin/assembly/1.1.2 http://maven.apache.org/xsd/assembly-1.1.2.xsd">
+	<id>distrib</id>
+	<formats>
+		<format>tar.gz</format>
+		<format>zip</format>
+	</formats>
+	
+	<includeBaseDirectory>true</includeBaseDirectory>
+	<baseDirectory>system-ml-${version}</baseDirectory>
+
+	<fileSets>
+		<fileSet>
+			<directory>${basedir}/src/test/config</directory>
+			<includes>
+				<include>SystemML-config.xml</include>
+			</includes>
+			<outputDirectory>.</outputDirectory>
+		</fileSet>
+		
+		<fileSet>
+			<directory>${basedir}/scripts</directory>
+			<includes>
+				<include>sparkDML.sh</include>
+			</includes>
+			<outputDirectory>.</outputDirectory>
+		</fileSet>
+
+		<fileSet>
+			<directory>${basedir}/scripts/algorithms</directory>
+			<includes>
+				<include>GLM-predict.dml</include>
+				<include>GLM.dml</include>
+				<include>Kmeans-predict.dml</include>
+				<include>Kmeans.dml</include>
+				<include>LinearRegCG.dml</include>
+				<include>LinearRegDS.dml</include>
+				<include>MultiLogReg.dml</include>
+				<include>Univar-Stats.dml</include>
+				<include>bivar-stats.dml</include>
+				<include>l2-svm-predict.dml</include>
+				<include>l2-svm.dml</include>
+				<include>m-svm-predict.dml</include>
+				<include>m-svm.dml</include>
+				<include>naive-bayes-predict.dml</include>
+				<include>naive-bayes.dml</include>
+				<include>stratstats.dml</include>
+				<include>transform.dml</include>
+				<include>apply-transform.dml</include>
+				<include>decision-tree.dml</include>
+				<include>decision-tree-predict.dml</include>
+				<!-- -->
+				<include>ALS.dml</include>
+				<include>ALS_predict.dml</include>
+				<include>ALS_topk_predict.dml</include>
+				<include>Cox.dml</include>
+				<include>Cox-predict.dml</include>
+				<include>KM.dml</include>
+				<include>PCA.dml</include>
+				<include>random-forest.dml</include>
+				<include>random-forest-predict.dml</include>
+				<include>StepGLM.dml</include>
+				<include>StepLinearRegDS.dml</include>
+			</includes>
+			<outputDirectory>./algorithms</outputDirectory>
+		</fileSet>
+    
+    <fileSet>
+			<directory>${basedir}/scripts/utils</directory>
+			<includes>
+				<include>cbind.dml</include>
+				<include>head.dml</include>
+				<include>project.dml</include>
+				<include>splitXY.dml</include>
+				<include>write.dml</include>
+				<include>csv2bin.dml</include>
+				<include>sample.dml</include>
+				<include>rowIndexMax.dml</include>
+				<!-- -->
+				<include>splitXY-dummy.dml</include>
+			</includes>
+			<outputDirectory>./algorithms/utils</outputDirectory>
+		</fileSet>
+		
+		<fileSet>
+			<directory>${basedir}/docs/Language Reference</directory>
+			<includes>
+				<include>SystemML_Language_Reference.html</include>
+				<include>README.txt</include>
+			</includes>
+			<outputDirectory>./docs</outputDirectory>
+		</fileSet>
+		
+		<fileSet>
+			<directory>${basedir}/docs/Algorithms Reference</directory>
+			<includes>
+				<include>SystemML_Algorithms_Reference.pdf</include>
+			</includes>
+			<outputDirectory>./docs</outputDirectory>
+		</fileSet>
+	</fileSets>
+	
+	<files>
+		<file>
+			<source>target/${artifactId}-${project.version}.jar</source>
+			<outputDirectory>.</outputDirectory>
+			<destName>SystemML.jar</destName>
+		</file>
+		<file>
+			<source>LICENSE</source>
+			<outputDirectory>.</outputDirectory>
+			<destName>LICENSE</destName>
+		</file>
+		<file>
+			<source>NOTICE</source>
+			<outputDirectory>.</outputDirectory>
+			<destName>NOTICE</destName>
+		</file>
+	</files>
+</assembly>

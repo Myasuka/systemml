@@ -106,7 +106,7 @@ public class LibMatrixBincell
 	 * @param ret
 	 * @throws DMLRuntimeException
 	 */
-	public static void bincellOp(MatrixBlock m1, MatrixBlock m2, MatrixBlock ret, BinaryOperator op) 
+		public static void bincellOp(MatrixBlock m1, MatrixBlock m2, MatrixBlock ret, BinaryOperator op)
 		throws DMLRuntimeException
 	{
 		//execute binary cell operations

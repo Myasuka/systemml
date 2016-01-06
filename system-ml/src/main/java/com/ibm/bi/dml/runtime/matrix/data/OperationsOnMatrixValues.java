@@ -236,6 +236,8 @@ public class OperationsOnMatrixValues
 	public static void incrementalAggregation(MatrixValue valueAgg, MatrixValue correction, MatrixValue valueAdd, 
 			AggregateOperator op, boolean imbededCorrection) throws DMLUnsupportedOperationException, DMLRuntimeException
 	{
+		System.out.println("op.correctionExists: " + op.correctionExists + "; imbededCorrection: " + imbededCorrection);
+		System.out.println("op.correctionLocation: " + op.correctionLocation);
 		if(op.correctionExists)
 		{
 			if(!imbededCorrection || op.correctionLocation==CorrectionLocationType.NONE)
